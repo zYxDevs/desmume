@@ -28,10 +28,7 @@ import re
 banned_ext = [ 'AMD', 'APPLE', 'NV', 'NVX', 'ATI', '3DLABS', 'SUN', 'SGI', 'SGIX', 'SGIS', 'INTEL', '3DFX', 'IBM', 'MESA', 'GREMEDY', 'OML', 'PGI', 'I3D', 'INGL', 'MTX', 'QCOM', 'IMG', 'ANGLE', 'SUNX', 'INGR' ]
 
 def noext(sym):
-   for ext in banned_ext:
-      if sym.endswith(ext):
-         return False
-   return True
+   return not any(sym.endswith(ext) for ext in banned_ext)
 
 def find_gl_symbols(lines):
    typedefs = []
@@ -39,20 +36,18 @@ def find_gl_symbols(lines):
    for line in lines:
       m = re.search(r'^typedef.+PFN(\S+)PROC.+$', line)
       g = re.search(r'^.+(gl\S+)\W*\(.+\).*$', line)
-      if m and noext(m.group(1)):
-         typedefs.append(m.group(0).replace('PFN', 'RGLSYM').replace('GLDEBUGPROC', 'RGLGENGLDEBUGPROC'))
-      if g and noext(g.group(1)):
-         syms.append(g.group(1))
+      if m and noext(m[1]):
+         typedefs.append(m[0].replace('PFN', 'RGLSYM').replace(
+             'GLDEBUGPROC', 'RGLGENGLDEBUGPROC'))
+      if g and noext(g[1]):
+         syms.append(g[1])
    return (typedefs, syms)
 
 def generate_defines(gl_syms):
-   res = []
-   for line in gl_syms:
-      res.append('#define {} __rglgen_{}'.format(line, line))
-   return res
+   return [f'#define {line} __rglgen_{line}' for line in gl_syms]
 
 def generate_declarations(gl_syms):
-   return ['RGLSYM' + x.upper() + 'PROC ' + '__rglgen_' + x + ';' for x in gl_syms]
+   return [f'RGLSYM{x.upper()}PROC __rglgen_{x};' for x in gl_syms]
 
 def generate_macros(gl_syms):
    return ['    SYM(' + x.replace('gl', '') + '),' for x in gl_syms]
@@ -73,7 +68,7 @@ if __name__ == '__main__':
 
       overrides = generate_defines(syms)
       declarations = generate_declarations(syms)
-      externs = ['extern ' + x for x in declarations]
+      externs = [f'extern {x}' for x in declarations]
 
       macros = generate_macros(syms)
 
