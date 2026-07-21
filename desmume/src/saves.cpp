@@ -76,6 +76,122 @@ savestates_t savestates[NB_STATES];
 
 #define SAVESTATE_VERSION       12
 static const char* magic = "DeSmuME SState\0";
+static const u32 MAX_SAVESTATE_SIZE = 256U * 1024U * 1024U;
+
+class SavestateChunkStream : public EMUFILE
+{
+private:
+	const u8 *data;
+	int dataSize;
+	int position;
+
+public:
+	SavestateChunkStream(const std::vector<u8> &buffer)
+		: data(buffer.empty() ? NULL : &buffer[0]), dataSize((int)buffer.size()), position(0)
+	{
+	}
+
+	virtual EMUFILE* memwrap()
+	{
+		EMUFILE_MEMORY *stream = new EMUFILE_MEMORY((void *)data, dataSize);
+		stream->fseek(position, SEEK_SET);
+		return stream;
+	}
+
+	virtual FILE* get_fp() { return NULL; }
+
+	virtual int fprintf(const char *, ...)
+	{
+		_failbit = true;
+		return -1;
+	}
+
+	virtual int fgetc()
+	{
+		if (position >= dataSize)
+			return EOF;
+		return data[position++];
+	}
+
+	virtual int fputc(int)
+	{
+		_failbit = true;
+		return EOF;
+	}
+
+	virtual char* fgets(char *str, int num)
+	{
+		if (str == NULL || num <= 0)
+		{
+			_failbit = true;
+			return NULL;
+		}
+
+		if (position >= dataSize)
+			return NULL;
+
+		int copied = 0;
+		while (copied < num - 1 && position < dataSize)
+		{
+			const char value = (char)data[position++];
+			str[copied++] = value;
+			if (value == '\n')
+				break;
+		}
+		str[copied] = '\0';
+		return str;
+	}
+
+	virtual size_t _fread(const void *ptr, size_t bytes)
+	{
+		const size_t remaining = (size_t)(dataSize - position);
+		const size_t bytesToRead = std::min(bytes, remaining);
+		if (bytesToRead > 0)
+			memcpy((void *)ptr, data + position, bytesToRead);
+		position += (int)bytesToRead;
+		if (bytesToRead != bytes)
+			_failbit = true;
+		return bytesToRead;
+	}
+
+	virtual size_t fwrite(const void *, size_t)
+	{
+		_failbit = true;
+		return 0;
+	}
+
+	virtual int fseek(int offset, int origin)
+	{
+		s64 target;
+		switch (origin)
+		{
+			case SEEK_SET: target = offset; break;
+			case SEEK_CUR: target = (s64)position + offset; break;
+			case SEEK_END: target = (s64)dataSize + offset; break;
+			default:
+				_failbit = true;
+				return -1;
+		}
+
+		if (target < 0 || target > dataSize)
+		{
+			_failbit = true;
+			return -1;
+		}
+
+		position = (int)target;
+		return 0;
+	}
+
+	virtual int ftell() { return position; }
+	virtual int size() { return dataSize; }
+	virtual void fflush() {}
+
+	virtual void truncate(s32)
+	{
+		_failbit = true;
+	}
+};
 
 //a savestate chunk loader can set this if it wants to permit a silent failure (for compatibility)
 static bool SAV_silent_fail_flag;
@@ -422,7 +538,7 @@ static bool s_slot1_loadstate(EMUFILE &is, int size)
 	slot1_Change(slot1Type);
 
 	EMUFILE_MEMORY temp;
-	is.read_MemoryStream(temp);
+	if (is.read_MemoryStream(temp) != 1) return false;
 	temp.fseek(0, SEEK_SET);
 	slot1_Loadstate(temp);
 
@@ -454,7 +570,7 @@ static bool s_slot2_loadstate(EMUFILE &is, int size)
 	slot2_Change(slot2Type);
 
 	EMUFILE_MEMORY temp;
-	is.read_MemoryStream(temp);
+	if (is.read_MemoryStream(temp) != 1) return false;
 	temp.fseek(0, SEEK_SET);
 	slot2_Loadstate(temp);
 
@@ -510,6 +626,10 @@ static void mmu_savestate(EMUFILE &os)
 
 static bool mmu_loadstate(EMUFILE &is, int size)
 {
+	if (size < 0) return false;
+	const int chunkStart = is.ftell();
+	if (chunkStart < 0) return false;
+
 	//read version
 	u32 version;
 	if (is.read_32LE(version) != 1) return false;
@@ -541,12 +661,17 @@ static bool mmu_loadstate(EMUFILE &is, int size)
 
 		if (addr_size == 0xFFFFFFFF)
 			return false;
+		if (bupmem_size > MC_SIZE_512MBITS || bupmem_size > (u32)(is.size() - is.ftell()))
+			return false;
 
 		u8 *temp = new u8[bupmem_size];
-		is.fread(temp,bupmem_size);
+		if (is.fread(temp,bupmem_size) != bupmem_size)
+		{
+			delete[] temp;
+			return false;
+		}
 		MMU_new.backupDevice.load_old_state(addr_size,temp,bupmem_size);
 		delete[] temp;
-		if (is.fail()) return false;
 	}
 
 	if (version < 2) return true;
@@ -595,9 +720,17 @@ static bool mmu_loadstate(EMUFILE &is, int size)
 	if (version < 8) return ok;
 
 	//version 8:
-	memset(MMU.fw.data._raw, 0, sizeof(NDSFirmwareData));
-	MMU.fw.size = is.read_u32LE();
-	is.fread(MMU.fw.data._raw, MMU.fw.size);
+	u32 firmwareSize;
+	if (is.read_32LE(firmwareSize) != 1) return false;
+
+	const int bytesRead = is.ftell() - chunkStart;
+	if (bytesRead < 0 || bytesRead > size) return false;
+	if (firmwareSize > sizeof(MMU.fw.data._raw)
+		|| firmwareSize > (u32)(size - bytesRead)) return false;
+
+	memset(MMU.fw.data._raw, 0, sizeof(MMU.fw.data._raw));
+	if (is.fread(MMU.fw.data._raw, firmwareSize) != firmwareSize) return false;
+	MMU.fw.size = firmwareSize;
 	
 	return ok;
 }
@@ -884,19 +1017,28 @@ static bool ReadStateChunk(EMUFILE &is, const SFORMAT *sf, int size)
 {
 	const SFORMAT *tmp = NULL;
 	const SFORMAT *guessSF = NULL;
-	int temp = is.ftell();
+	const int start = is.ftell();
+	if (start < 0 || size < 0 || size > is.size() - start)
+		return false;
+	const int end = start + size;
 
-	while (is.ftell() < (temp+size))
+	while (is.ftell() < end)
 	{
+		if (is.ftell() < 0 || end - is.ftell() < 12)
+			return false;
+
 		u32 sz, count;
 
 		char toa[4];
-		is.fread(toa,4);
-		if (is.fail())
+		if (is.fread(toa,4) != 4)
 			return false;
 
 		if (!is.read_32LE(sz)) return false;
 		if (!is.read_32LE(count)) return false;
+
+		const u64 dataSize = (u64)sz * count;
+		if (dataSize > (u64)(end - is.ftell()))
+			return false;
 		
 		tmp = CheckS(guessSF,sf,sz,count,toa);
 		
@@ -906,29 +1048,29 @@ static bool ReadStateChunk(EMUFILE &is, const SFORMAT *sf, int size)
 			if (sz == 1)
 			{
 				//special case: read a huge byte array
-				is.fread(tmp->v,count);
+				if (is.fread(tmp->v,count) != count) return false;
 			}
 			else
 			{
 				for (size_t i = 0; i < count; i++)
 				{
-					is.fread((u8 *)tmp->v + i*sz,sz);
+					if (is.fread((u8 *)tmp->v + i*sz,sz) != sz) return false;
                     FlipByteOrder((u8 *)tmp->v + i*sz,sz);
 				}
 			}
 		#else
 			// no need to ever loop one at a time if not flipping byte order
-			is.fread(tmp->v,sz*count);
+			if (is.fread(tmp->v,(size_t)dataSize) != dataSize) return false;
 		#endif
 			guessSF = tmp + 1;
 		}
 		else
 		{
-			is.fseek(sz*count,SEEK_CUR);
+			if (is.fseek((int)dataSize,SEEK_CUR) != 0) return false;
 			guessSF = NULL;
 		}
 	} // while(...)
-	return true;
+	return is.ftell() == end;
 }
 
 
@@ -1193,6 +1335,13 @@ static bool ReadStateChunks(EMUFILE &is, s32 totalsize)
 	bool ret = true;
 	bool haveInfo = false;
 	bool chunkError = false;
+	bool foundTerminator = false;
+
+	const int stateStart = is.ftell();
+	const int streamSize = is.size();
+	if (stateStart < 0 || streamSize < stateStart || totalsize < 0 || totalsize > streamSize - stateStart)
+		return false;
+	const int stateEnd = stateStart + totalsize;
 	
 	s64 save_time = 0;
 	u32 romsize = 0;
@@ -1213,42 +1362,54 @@ static bool ReadStateChunks(EMUFILE &is, s32 totalsize)
 	};
 	memset(&header, 0, sizeof(header));
 
-	while (totalsize > 0)
+	while (is.ftell() < stateEnd)
 	{
 		u32 size = 0;
 		u32 t = 0;
-		if (!is.read_32LE(t))  { ret=false; break; }
-		if (t == 0xFFFFFFFF) break;
-		if (!is.read_32LE(size))  { ret=false; break; }
-		u32 endPos = is.ftell() + size;
+		if (stateEnd - is.ftell() < 4 || !is.read_32LE(t))
+			return false;
+		if (t == 0xFFFFFFFF)
+		{
+			foundTerminator = true;
+			break;
+		}
+		if (stateEnd - is.ftell() < 4 || !is.read_32LE(size))
+			return false;
+		if (size > (u32)(stateEnd - is.ftell()))
+			return false;
+
+		std::vector<u8> chunkData(size);
+		if (size > 0 && is.fread(&chunkData[0], size) != size)
+			return false;
+		SavestateChunkStream chunk(chunkData);
 		
 		switch(t)
 		{
-			case 1: if(!ReadStateChunk(is,SF_ARM9,size)) ret=false; break;
-			case 2: if(!ReadStateChunk(is,SF_ARM7,size)) ret=false; break;
-			case 3: if(!cp15_loadstate(is,size)) ret=false; break;
-			case 4: if(!ReadStateChunk(is,SF_MEM,size)) ret=false; break;
-			case 5: if(!ReadStateChunk(is,SF_NDS,size)) ret=false; break;
-			case 51: if(!nds_loadstate(is,size)) ret=false; break;
-			case 60: if(!ReadStateChunk(is,SF_MMU,size)) ret=false; break;
-			case 61: if(!mmu_loadstate(is,size)) ret=false; break;
-			case 7: if(!gpu_loadstate(is,size)) ret=false; break;
-			case 8: if(!spu_loadstate(is,size)) ret=false; break;
-			case 81: if(!mic_loadstate(is,size)) ret=false; break;
-			case 90: if(!ReadStateChunk(is,SF_GFX3D,size)) ret=false; break;
-			case 91: if(!gfx3d_loadstate(is,size)) ret=false; break;
-			case 100: if(!ReadStateChunk(is,SF_MOVIE, size)) ret=false; break;
-			case 101: if(!mov_loadstate(is, size)) ret=false; break;
-			case 111: if(!wifiHandler->LoadState(is,size)) ret=false; break;
-			case 120: if(!ReadStateChunk(is,SF_RTC,size)) ret=false; break;
-			case 130: if(!ReadStateChunk(is,SF_INFO,size)) ret=false; else haveInfo=true; break;
-			case 140: if(!s_slot1_loadstate(is, size)) ret=false; break;
-			case 150: if(!s_slot2_loadstate(is, size)) ret=false; break;
+			case 1: if(!ReadStateChunk(chunk,SF_ARM9,size)) ret=false; break;
+			case 2: if(!ReadStateChunk(chunk,SF_ARM7,size)) ret=false; break;
+			case 3: if(!cp15_loadstate(chunk,size)) ret=false; break;
+			case 4: if(!ReadStateChunk(chunk,SF_MEM,size)) ret=false; break;
+			case 5: if(!ReadStateChunk(chunk,SF_NDS,size)) ret=false; break;
+			case 51: if(!nds_loadstate(chunk,size)) ret=false; break;
+			case 60: if(!ReadStateChunk(chunk,SF_MMU,size)) ret=false; break;
+			case 61: if(!mmu_loadstate(chunk,size)) ret=false; break;
+			case 7: if(!gpu_loadstate(chunk,size)) ret=false; break;
+			case 8: if(!spu_loadstate(chunk,size)) ret=false; break;
+			case 81: if(!mic_loadstate(chunk,size)) ret=false; break;
+			case 90: if(!ReadStateChunk(chunk,SF_GFX3D,size)) ret=false; break;
+			case 91: if(!gfx3d_loadstate(chunk,size)) ret=false; break;
+			case 100: if(!ReadStateChunk(chunk,SF_MOVIE, size)) ret=false; break;
+			case 101: if(!mov_loadstate(chunk, size)) ret=false; break;
+			case 111: if(!wifiHandler->LoadState(chunk,size)) ret=false; break;
+			case 120: if(!ReadStateChunk(chunk,SF_RTC,size)) ret=false; break;
+			case 130: if(!ReadStateChunk(chunk,SF_INFO,size)) ret=false; else haveInfo=true; break;
+			case 140: if(!s_slot1_loadstate(chunk, size)) ret=false; break;
+			case 150: if(!s_slot2_loadstate(chunk, size)) ret=false; break;
 			// reserved for future versions
 			case 160:
 			case 170:
 			case 180:
-				if(!ReadStateChunk(is,reserveChunks,size)) ret=false;
+				if(!ReadStateChunk(chunk,reserveChunks,size)) ret=false;
 			break;
 			// ============================
 				
@@ -1256,16 +1417,31 @@ static bool ReadStateChunks(EMUFILE &is, s32 totalsize)
 				return false;
 		}
 		
-		if (is.ftell() != endPos)
+		if (chunk.fail())
+			return false;
+
+		if (chunk.ftell() != (int)size)
 		{
-			// Should we just go ahead and return false?
 			chunkError = true;
-			is.fseek(endPos, SEEK_SET);
 		}
 		
 		if(!ret)
 			return false;
 	}
+
+	if (!foundTerminator || is.ftell() != stateEnd)
+		return false;
+	for (size_t i = 0; i < ARRAY_SIZE(ipc_fifo); i++)
+	{
+		if (ipc_fifo[i].head >= ARRAY_SIZE(ipc_fifo[i].buf)
+			|| ipc_fifo[i].tail >= ARRAY_SIZE(ipc_fifo[i].buf)
+			|| ipc_fifo[i].size > ARRAY_SIZE(ipc_fifo[i].buf))
+			return false;
+	}
+	if (disp_fifo.head >= ARRAY_SIZE(disp_fifo.buf) || disp_fifo.tail >= ARRAY_SIZE(disp_fifo.buf))
+		return false;
+	if (!gfx3d_IsStateValid())
+		return false;
 	
 	if (chunkError)
 	{
@@ -1349,19 +1525,26 @@ bool savestate_load(EMUFILE &is)
 {
 	SAV_silent_fail_flag = false;
 	char header[16];
-	is.fread(header,16);
-	if (is.fail() || memcmp(header,magic,16))
+	if (is.fread(header,16) != 16 || memcmp(header,magic,16))
 		return false;
 
-	u32 ssversion,len,comprlen;
+	u32 ssversion, desmumeVersion, len, comprlen;
 	if (!is.read_32LE(ssversion)) return false;
-	if (!is.read_32LE(_DESMUME_version)) return false;
+	if (!is.read_32LE(desmumeVersion)) return false;
 	if (!is.read_32LE(len)) return false;
 	if (!is.read_32LE(comprlen)) return false;
 
 	if (ssversion != SAVESTATE_VERSION) return false;
+	if (len == 0 || len > MAX_SAVESTATE_SIZE) return false;
 
-	std::vector<u8> buf(len);
+	u32 payloadSize = len;
+	const int inputPosition = is.ftell();
+	const int inputSize = is.size();
+	if (inputPosition < 0 || inputSize < inputPosition)
+		return false;
+	const u32 inputRemaining = (u32)(inputSize - inputPosition);
+
+	std::vector<u8> buf;
 
 	if (comprlen != 0xFFFFFFFF)
 	{
@@ -1369,21 +1552,31 @@ bool savestate_load(EMUFILE &is)
 		//without libz, we can't decompress this savestate
 		return false;
 #endif
-		std::vector<char> cbuf(comprlen);
-		is.fread(&cbuf[0],comprlen);
-		if (is.fail()) return false;
+		if (comprlen == 0 || comprlen > MAX_SAVESTATE_SIZE || comprlen > inputRemaining)
+			return false;
+		std::vector<u8> cbuf(comprlen);
+		buf.resize(payloadSize);
+		if (is.fread(&cbuf[0],comprlen) != comprlen) return false;
 
 #ifdef HAVE_LIBZ
 		uLongf uncomprlen = len;
-		int error = uncompress((u8*)&buf[0],&uncomprlen,(u8*)&cbuf[0],comprlen);
+		int error = uncompress(&buf[0],&uncomprlen,&cbuf[0],comprlen);
 		if (error != Z_OK || uncomprlen != len)
 			return false;
 #endif
 	}
 	else
 	{
-		is.fread(&buf[0],len-32);
+		if (len < 32)
+			return false;
+		payloadSize = len - 32;
+		if (payloadSize == 0 || payloadSize > inputRemaining)
+			return false;
+		buf.resize(payloadSize);
+		if (is.fread(&buf[0],payloadSize) != payloadSize) return false;
 	}
+
+	_DESMUME_version = desmumeVersion;
 
 	//GO!! READ THE SAVESTATE
 	//THERE IS NO GOING BACK NOW
@@ -1407,7 +1600,7 @@ bool savestate_load(EMUFILE &is)
 	//SPU_Reset();
 
 	EMUFILE_MEMORY mstemp(&buf);
-	bool x = ReadStateChunks(mstemp,(s32)len);
+	bool x = ReadStateChunks(mstemp,(s32)payloadSize);
 
 	if (!x && !SAV_silent_fail_flag)
 	{

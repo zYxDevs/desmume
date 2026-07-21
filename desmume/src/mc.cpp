@@ -163,34 +163,42 @@ bool BackupDevice::load_state(EMUFILE &is)
 	std::vector<u8> data;
 
 	if (is.read_32LE(version) != 1) return false;
+	if (version > 5) return false;
 
-	is.read_bool32(this->_write_enable);
-	is.read_32LE(this->_com);
-	is.read_32LE(this->_addr_size);
-	is.read_32LE(this->_addr_counter);
-	is.read_32LE(temp);
+	if (is.read_bool32(this->_write_enable) != 1) return false;
+	if (is.read_32LE(this->_com) != 1) return false;
+	if (is.read_32LE(this->_addr_size) != 1) return false;
+	if (is.read_32LE(this->_addr_counter) != 1) return false;
+	if (is.read_32LE(temp) != 1 || temp > RUNNING) return false;
 	this->_state = (STATE)temp;
-	is.read_buffer(data);
-	is.read_buffer(this->_data_autodetect);
+	if (is.read_buffer(data, MC_SIZE_512MBITS) != 1) return false;
+	if (is.read_buffer(this->_data_autodetect, MC_SIZE_512MBITS) != 1) return false;
+	if (this->_addr_size > 4 || this->_addr_counter > this->_addr_size) return false;
 
 	if (version >= 1)
-		is.read_32LE(this->_addr);
+	{
+		if (is.read_32LE(this->_addr) != 1) return false;
+	}
 	
 	if (version >= 2)
 	{
-		is.read_u8(this->_motionInitState);
-		is.read_u8(this->_motionFlag);
+		if (is.read_u8(this->_motionInitState) != 1) return false;
+		if (is.read_u8(this->_motionFlag) != 1) return false;
 	}
 
 	if (version >= 3)
 	{
-		is.read_bool32(this->_reset_command_state);
+		if (is.read_bool32(this->_reset_command_state) != 1) return false;
 	}
 
 	if (version >= 4)
 	{
-		is.read_u8(this->_write_protect);
+		if (is.read_u8(this->_write_protect) != 1) return false;
 	}
+
+	u32 savePosition = this->_addr;
+	if (version >= 5 && is.read_32LE(savePosition) != 1) return false;
+	if (savePosition > data.size()) return false;
 
 	this->_fsize = (u32)data.size();
 #ifndef _DONT_SAVE_BACKUP
@@ -200,15 +208,9 @@ bool BackupDevice::load_state(EMUFILE &is)
 	ensure((u32)data.size(), this->_fpMC);
 #endif
 
-	if (version >= 5)
-	{
-		is.read_32LE(temp);
-		this->_fpMC->fseek(temp, SEEK_SET);
-	}
-	else
-		this->_fpMC->fseek(this->_addr, SEEK_SET);
+	this->_fpMC->fseek(savePosition, SEEK_SET);
 
-	return true;
+	return !is.fail();
 }
 
 BackupDevice::BackupDevice()
