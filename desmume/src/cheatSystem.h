@@ -83,8 +83,6 @@ private:
 	u8					_filename[MAX_PATH];
 	size_t				_currentGet;
 
-	char	*clearCode(char *s);
-
 public:
 	CHEATS()
 		: _currentGet(0)
