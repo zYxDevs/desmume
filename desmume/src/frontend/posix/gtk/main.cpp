@@ -1185,7 +1185,7 @@ static void OpenNdsDialog(GSimpleAction *action, GVariant *parameter, gpointer u
             memset(&recentData, 0, sizeof(GtkRecentData));
             recentData.mime_type = g_strdup("application/x-nintendo-ds-rom");
             recentData.app_name = (gchar *) g_get_application_name ();
-            recentData.app_exec = g_strjoin (" ", g_get_prgname (), "%f", NULL);
+            recentData.app_exec = g_strdup ("desmume %f");
 
             GtkRecentManager *manager;
             manager = gtk_recent_manager_get_default ();
@@ -4241,6 +4241,8 @@ int main (int argc, char *argv[])
 #endif
   // The global menu screws up the window size...
   unsetenv("UBUNTU_MENUPROXY");
+
+  g_set_prgname("org.desmume.DeSmuME");
 
   // this must be called as early as possible
   NDS_Init();
