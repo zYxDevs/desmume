@@ -970,7 +970,7 @@ public:
 	void LoadState_LegacyFormat(const GeometryEngineLegacySave &inLegacySave);
 	
 	void SaveState_v2(EMUFILE &os);
-	void LoadState_v2(EMUFILE &is);
+	bool LoadState_v2(EMUFILE &is);
 	
 	void SaveState_v4(EMUFILE &os);
 	void LoadState_v4(EMUFILE &is);
@@ -1015,6 +1015,7 @@ extern SFORMAT SF_GFX3D[];
 void gfx3d_PrepareSaveStateBufferWrite();
 void gfx3d_savestate(EMUFILE &os);
 bool gfx3d_loadstate(EMUFILE &is, int size);
+bool gfx3d_IsStateValid();
 void gfx3d_FinishLoadStateBufferRead();
 
 void gfx3d_ClearStack();

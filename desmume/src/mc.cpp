@@ -88,6 +88,10 @@ static const u32 saveSizes[] = {512,			// 4k
 								0xFFFFFFFF};
 static const u32 saveSizes_count = ARRAY_SIZE(saveSizes);
 
+static const u32 MAX_NOGBA_PACKED_SIZE = MC_SIZE_512MBITS
+	+ ((MC_SIZE_512MBITS + 126) / 127) + 1;
+static const u32 MAX_NOGBA_FILE_SIZE = 0x50 + MAX_NOGBA_PACKED_SIZE;
+
 //the lookup table from user save types to save parameters
 const SAVE_TYPE save_types[] = {
 	{"Autodetect",		MC_TYPE_AUTODETECT,	1, 0},
@@ -163,34 +167,42 @@ bool BackupDevice::load_state(EMUFILE &is)
 	std::vector<u8> data;
 
 	if (is.read_32LE(version) != 1) return false;
+	if (version > 5) return false;
 
-	is.read_bool32(this->_write_enable);
-	is.read_32LE(this->_com);
-	is.read_32LE(this->_addr_size);
-	is.read_32LE(this->_addr_counter);
-	is.read_32LE(temp);
+	if (is.read_bool32(this->_write_enable) != 1) return false;
+	if (is.read_32LE(this->_com) != 1) return false;
+	if (is.read_32LE(this->_addr_size) != 1) return false;
+	if (is.read_32LE(this->_addr_counter) != 1) return false;
+	if (is.read_32LE(temp) != 1 || temp > RUNNING) return false;
 	this->_state = (STATE)temp;
-	is.read_buffer(data);
-	is.read_buffer(this->_data_autodetect);
+	if (is.read_buffer(data, MC_SIZE_512MBITS) != 1) return false;
+	if (is.read_buffer(this->_data_autodetect, MC_SIZE_512MBITS) != 1) return false;
+	if (this->_addr_size > 4 || this->_addr_counter > this->_addr_size) return false;
 
 	if (version >= 1)
-		is.read_32LE(this->_addr);
+	{
+		if (is.read_32LE(this->_addr) != 1) return false;
+	}
 	
 	if (version >= 2)
 	{
-		is.read_u8(this->_motionInitState);
-		is.read_u8(this->_motionFlag);
+		if (is.read_u8(this->_motionInitState) != 1) return false;
+		if (is.read_u8(this->_motionFlag) != 1) return false;
 	}
 
 	if (version >= 3)
 	{
-		is.read_bool32(this->_reset_command_state);
+		if (is.read_bool32(this->_reset_command_state) != 1) return false;
 	}
 
 	if (version >= 4)
 	{
-		is.read_u8(this->_write_protect);
+		if (is.read_u8(this->_write_protect) != 1) return false;
 	}
+
+	u32 savePosition = this->_addr;
+	if (version >= 5 && is.read_32LE(savePosition) != 1) return false;
+	if (savePosition > data.size()) return false;
 
 	this->_fsize = (u32)data.size();
 #ifndef _DONT_SAVE_BACKUP
@@ -200,15 +212,9 @@ bool BackupDevice::load_state(EMUFILE &is)
 	ensure((u32)data.size(), this->_fpMC);
 #endif
 
-	if (version >= 5)
-	{
-		is.read_32LE(temp);
-		this->_fpMC->fseek(temp, SEEK_SET);
-	}
-	else
-		this->_fpMC->fseek(this->_addr, SEEK_SET);
+	this->_fpMC->fseek(savePosition, SEEK_SET);
 
-	return true;
+	return !is.fail();
 }
 
 BackupDevice::BackupDevice()
@@ -279,7 +285,7 @@ BackupDevice::BackupDevice()
 		{
 			u32 sz = fpTmp.size();
 
-			if (sz > 0)
+			if (sz > 0 && sz <= MAX_NOGBA_FILE_SIZE)
 			{
 				EMUFILE_FILE fpOut = EMUFILE_FILE(_fileName, "wb");
 				if (!fpOut.fail())
@@ -1126,136 +1132,162 @@ bool BackupDevice::exportData(const char *filename)
 const char no_GBA_HEADER_ID[] = "NocashGbaBackupMediaSavDataFile";
 const char no_GBA_HEADER_SRAM_ID[] = "SRAM";
 
+struct NoGbaSaveInfo
+{
+	u32 compressionMethod;
+	u32 packedSize;
+	u32 unpackedSize;
+	size_t dataOffset;
+};
+
+static u32 readNoGbaU32(const u8 *data)
+{
+	u32 value;
+	memcpy(&value, data, sizeof(value));
+	return LE_TO_LOCAL_32(value);
+}
+
+static u16 readNoGbaU16(const u8 *data)
+{
+	u16 value;
+	memcpy(&value, data, sizeof(value));
+	return LE_TO_LOCAL_16(value);
+}
+
+static bool readNoGbaSaveInfo(const u8 *data, size_t dataSize, NoGbaSaveInfo &info)
+{
+	if (data == NULL || dataSize < 0x4C) return false;
+	if (memcmp(data, no_GBA_HEADER_ID, 0x1F) != 0) return false;
+	if (data[0x1F] != 0x1A) return false;
+	if (memcmp(data + 0x40, no_GBA_HEADER_SRAM_ID, 4) != 0) return false;
+
+	info.compressionMethod = readNoGbaU32(data + 0x44);
+	if (info.compressionMethod == 0)
+	{
+		info.packedSize = readNoGbaU32(data + 0x48);
+		info.unpackedSize = info.packedSize;
+		info.dataOffset = 0x4C;
+	}
+	else if (info.compressionMethod == 1)
+	{
+		if (dataSize < 0x50) return false;
+		info.packedSize = readNoGbaU32(data + 0x48);
+		info.unpackedSize = readNoGbaU32(data + 0x4C);
+		info.dataOffset = 0x50;
+
+		const u64 maximumPackedSize = ((u64)info.unpackedSize * 2) + 1;
+		if (info.packedSize == 0 || info.packedSize > MAX_NOGBA_PACKED_SIZE || info.packedSize > maximumPackedSize)
+			return false;
+	}
+	else
+	{
+		return false;
+	}
+
+	return info.unpackedSize > 0 && info.unpackedSize <= MC_SIZE_512MBITS;
+}
+
+static bool hasNoGbaData(const NoGbaSaveInfo &info, size_t dataSize)
+{
+	return info.dataOffset <= dataSize && info.packedSize <= dataSize - info.dataOffset;
+}
+
 u32 BackupDevice::get_save_nogba_size(const char* fname)
 {
 	FILE *fsrc = fopen(fname, "rb");
-	if (fsrc)
-	{
-		char src[0x50] = {0};
-		size_t fsize = 0;
-		fseek(fsrc, 0, SEEK_END);
-		fsize = ftell(fsrc);
-		fseek(fsrc, 0, SEEK_SET);
-		if (fsize < 0x50) { fclose(fsrc); return 0xFFFFFFFF; }
-		memset(&src[0], 0, sizeof(src));
-		if (fread(src, 1, sizeof(src), fsrc) != sizeof(src))  { fclose(fsrc); return 0xFFFFFFFF; }
+	if (fsrc == NULL) return 0xFFFFFFFF;
 
-		for (u8 i = 0; i < 0x1F; i++)
-			if (src[i] != no_GBA_HEADER_ID[i]) { fclose(fsrc); return 0xFFFFFFFF; }
-		if (src[0x1F] != 0x1A) { fclose(fsrc); return 0xFFFFFFFF; }
-		for (int i = 0; i < 0x4; i++)
-			if (src[i+0x40] != no_GBA_HEADER_SRAM_ID[i]) { fclose(fsrc); return 0xFFFFFFFF; }
-		
-		u32 compressMethod = *((u32*)(src+0x44));
-		if (compressMethod == 0)
-			{ fclose(fsrc); return *((u32*)(src+0x48)); }
-		else
-			if (compressMethod == 1)
-				{ fclose(fsrc); return *((u32*)(src+0x4C)); }
+	if (fseek(fsrc, 0, SEEK_END) != 0)
+	{
 		fclose(fsrc);
+		return 0xFFFFFFFF;
 	}
-	return 0xFFFFFFFF;
+
+	const long fileSize = ftell(fsrc);
+	if (fileSize < 0 || (u64)fileSize > MAX_NOGBA_FILE_SIZE || fseek(fsrc, 0, SEEK_SET) != 0)
+	{
+		fclose(fsrc);
+		return 0xFFFFFFFF;
+	}
+
+	u8 header[0x50] = {0};
+	const size_t headerSize = (size_t)fileSize < sizeof(header) ? (size_t)fileSize : sizeof(header);
+	const bool readSucceeded = fread(header, 1, headerSize, fsrc) == headerSize;
+	fclose(fsrc);
+
+	NoGbaSaveInfo info;
+	if (!readSucceeded || !readNoGbaSaveInfo(header, headerSize, info) || !hasNoGbaData(info, (size_t)fileSize))
+		return 0xFFFFFFFF;
+
+	return info.unpackedSize;
 }
 
-u32 BackupDevice::get_save_nogba_size(u8 *data)
+u32 BackupDevice::get_save_nogba_size(const u8 *data, u32 dataSize)
 {
-	for (u8 i = 0; i < 0x1F; i++)
-		if (data[i] != no_GBA_HEADER_ID[i]) return 0xFFFFFFFF;
-	if (data[0x1F] != 0x1A) return 0xFFFFFFFF;
-	for (int i = 0; i < 0x4; i++)
-		if (data[i+0x40] != no_GBA_HEADER_SRAM_ID[i]) return 0xFFFFFFFF;
-	
-	u32 compressMethod = *((u32*)(data+0x44));
-	if (compressMethod == 0)
-		return *((u32*)(data+0x48));
-	if (compressMethod == 1)
-		return *((u32*)(data+0x4C));
-
-	return 0xFFFFFFFF;
+	NoGbaSaveInfo info;
+	if (!readNoGbaSaveInfo(data, dataSize, info) || !hasNoGbaData(info, dataSize)) return 0xFFFFFFFF;
+	return info.unpackedSize;
 }
 
-static int no_gba_unpackSAV(void *in_buf, size_t fsize, void *out_buf, u32 &size)
+static bool no_gba_unpackSAV(const u8 *src, size_t srcSize, u8 *dst, size_t dstCapacity, u32 &size)
 {
-	u8	*src = (u8 *)in_buf;
-	u8	*dst = (u8 *)out_buf;
-	u32 src_pos = 0;
-	u32 dst_pos = 0;
-	u8	cc = 0;
-	u32	size_unpacked = 0;
-	u32	size_packed = 0;
-	u32	compressMethod = 0;
+	NoGbaSaveInfo info;
+	if (!readNoGbaSaveInfo(src, srcSize, info) || !hasNoGbaData(info, srcSize)) return false;
+	if (dst == NULL || info.unpackedSize > dstCapacity) return false;
 
-	if (fsize < 0x50) return (1);
-
-	for (int i = 0; i < 0x1F; i++)
+	if (info.compressionMethod == 0)
 	{
-		if (src[i] != no_GBA_HEADER_ID[i]) return (2);
-	}
-	if (src[0x1F] != 0x1A) return (2);
-	for (int i = 0; i < 0x4; i++)
-	{
-		if (src[i+0x40] != no_GBA_HEADER_SRAM_ID[i]) return (3);
+		memcpy(dst, src + info.dataOffset, info.unpackedSize);
+		size = info.unpackedSize;
+		return true;
 	}
 
-	compressMethod = *((u32*)(src+0x44));
+	size_t srcPos = info.dataOffset;
+	const size_t srcEnd = info.dataOffset + info.packedSize;
+	size_t dstPos = 0;
 
-	if (compressMethod == 0)				// unpacked
+	while (srcPos < srcEnd)
 	{
-		size_unpacked = *((u32*)(src+0x48));
-		src_pos = 0x4C;
-		for (u32 i = 0; i < size_unpacked; i++)
+		const u8 control = src[srcPos++];
+		if (control == 0)
 		{
-			dst[dst_pos++] = src[src_pos++];
+			if (dstPos != info.unpackedSize) return false;
+			size = (u32)dstPos;
+			return true;
 		}
-		size = dst_pos;
-		return (0);
-	}
 
-	if (compressMethod == 1)				// packed (method 1)
-	{
-		size_packed = *((u32*)(src+0x48));
-		size_unpacked = *((u32*)(src+0x4C));
-
-		src_pos = 0x50;
-		while (true)
+		size_t count;
+		if (control == 0x80)
 		{
-			cc = src[src_pos++];
-			
-			if (cc == 0) 
-			{
-				size = dst_pos;
-				return (0);
-			}
-
-			if (cc == 0x80)
-			{
-				u16 tsize = *((u16*)(src+src_pos+1));
-				for (int t = 0; t < tsize; t++)
-					dst[dst_pos++] = src[src_pos];
-				src_pos += 3;
-				continue;
-			}
-
-			if (cc > 0x80)		// repeat
-			{
-				cc -= 0x80;
-				for (int t = 0; t < cc; t++)
-					dst[dst_pos++] = src[src_pos];
-				src_pos++;
-				continue;
-			}
-			// copy
-			for (int t = 0; t < cc; t++)
-				dst[dst_pos++] = src[src_pos++];
+			if (srcEnd - srcPos < 3) return false;
+			count = readNoGbaU16(src + srcPos + 1);
+			if (count == 0 || count > info.unpackedSize - dstPos) return false;
+			memset(dst + dstPos, src[srcPos], count);
+			srcPos += 3;
 		}
-		size = dst_pos;
-		return (0);
+		else if (control > 0x80)
+		{
+			count = control - 0x80;
+			if (srcPos >= srcEnd || count > info.unpackedSize - dstPos) return false;
+			memset(dst + dstPos, src[srcPos++], count);
+		}
+		else
+		{
+			count = control;
+			if (count > srcEnd - srcPos || count > info.unpackedSize - dstPos) return false;
+			memcpy(dst + dstPos, src + srcPos, count);
+			srcPos += count;
+		}
+		dstPos += count;
 	}
-	return (200);
+
+	return false;
 }
 
 u32 BackupDevice::trim(void *buf, u32 size)
 {
+	if (buf == NULL || size < 16) return size;
+
 	u32 rows = size / 16;
 	u32 pos = (size - 16);
 	u8	*src = (u8*)buf;
@@ -1289,66 +1321,86 @@ u32 BackupDevice::fillLeft(u32 size)
 
 bool BackupDevice::import_no_gba(const char *fname, u32 force_size)
 {
-	FILE	*fsrc = fopen(fname, "rb");
-	u8		*in_buf = NULL;
-	u8		*out_buf = NULL;
+	FILE *fsrc = fopen(fname, "rb");
+	if (fsrc == NULL) return false;
 
-	if (fsrc)
+	if (fseek(fsrc, 0, SEEK_END) != 0)
 	{
-		size_t fsize = 0;
-		fseek(fsrc, 0, SEEK_END);
-		fsize = ftell(fsrc);
-		fseek(fsrc, 0, SEEK_SET);
-		//printf("Open %s file (size %i bytes)\n", fname, fsize);
-
-		in_buf = new u8 [fsize];
-
-		if (fread(in_buf, 1, fsize, fsrc) == fsize)
-		{
-			out_buf = new u8 [8 * 1024 * 1024 / 8];
-			u32 size = 0;
-
-			memset(out_buf, 0xFF, 8 * 1024 * 1024 / 8);
-			if (no_gba_unpackSAV(in_buf, fsize, out_buf, size) == 0)
-			{
-				if (force_size > 0)
-					size = force_size;
-				//printf("New size %i byte(s)\n", size);
-				size = trim(out_buf, size);
-				//printf("--- new size after trim %i byte(s)\n", size);
-				size = fillLeft(size);
-				//printf("--- new size after fill %i byte(s)\n", size);
-				raw_applyUserSettings(size, (force_size > 0));
-				saveBuffer(out_buf, size, true, true);
-
-				if (in_buf) delete [] in_buf;
-				if (out_buf) delete [] out_buf;
-				fclose(fsrc);
-				return true;
-			}
-			if (out_buf) delete [] out_buf;
-		}
-		if (in_buf) delete [] in_buf;
 		fclose(fsrc);
+		return false;
 	}
-	return false;
+
+	const long fileSize = ftell(fsrc);
+	if (fileSize < 0 || (u64)fileSize > MAX_NOGBA_FILE_SIZE || fseek(fsrc, 0, SEEK_SET) != 0)
+	{
+		fclose(fsrc);
+		return false;
+	}
+
+	u8 header[0x50] = {0};
+	const size_t headerSize = (size_t)fileSize < sizeof(header) ? (size_t)fileSize : sizeof(header);
+	if (fread(header, 1, headerSize, fsrc) != headerSize)
+	{
+		fclose(fsrc);
+		return false;
+	}
+
+	NoGbaSaveInfo info;
+	if (!readNoGbaSaveInfo(header, headerSize, info) || !hasNoGbaData(info, (size_t)fileSize))
+	{
+		fclose(fsrc);
+		return false;
+	}
+
+	const size_t inputSize = info.dataOffset + info.packedSize;
+	std::vector<u8> input(inputSize);
+	if (fseek(fsrc, 0, SEEK_SET) != 0 || fread(&input[0], 1, inputSize, fsrc) != inputSize)
+	{
+		fclose(fsrc);
+		return false;
+	}
+	fclose(fsrc);
+
+	if (force_size > MC_SIZE_512MBITS) return false;
+	const u32 requestedSize = force_size > info.unpackedSize ? force_size : info.unpackedSize;
+	const u32 outputCapacity = fillLeft(requestedSize);
+	if (outputCapacity < info.unpackedSize || outputCapacity > MC_SIZE_512MBITS) return false;
+
+	std::vector<u8> output(outputCapacity, 0xFF);
+	u32 size = 0;
+	if (!no_gba_unpackSAV(&input[0], input.size(), &output[0], output.size(), size)) return false;
+
+	if (force_size > 0) size = force_size;
+	size = fillLeft(trim(&output[0], size));
+	if (size > output.size()) return false;
+
+	raw_applyUserSettings(size, (force_size > 0));
+	if (size > output.size()) return false;
+	saveBuffer(&output[0], size, true, true);
+	return true;
 }
 
 bool BackupDevice::no_gba_unpack(u8 *&buf, u32 &size)
 {
 	if (!buf) return false;
-	u32 out_size = get_save_nogba_size(buf);
-	if (out_size == 0xFFFFFFFF) return false;
-	u8 *out_buf = new u8 [out_size];
-	if (out_buf)
+	const u32 unpackedSize = get_save_nogba_size(buf, size);
+	if (unpackedSize == 0xFFFFFFFF) return false;
+
+	const u32 outputCapacity = fillLeft(unpackedSize);
+	if (outputCapacity < unpackedSize || outputCapacity > MC_SIZE_512MBITS) return false;
+
+	u8 *out_buf = new u8 [outputCapacity];
+	memset(out_buf, 0xFF, outputCapacity);
+
+	u32 outSize = 0;
+	if (no_gba_unpackSAV(buf, size, out_buf, outputCapacity, outSize))
 	{
-		if (no_gba_unpackSAV(buf, size, out_buf, out_size) == 0)
+		outSize = fillLeft(trim(out_buf, outSize));
+		if (outSize <= outputCapacity)
 		{
-			out_size = trim(out_buf, out_size);
-			out_size = fillLeft(out_size);
 			delete [] buf;
 			buf = out_buf;
-			size = out_size;
+			size = outSize;
 			return true;
 		}
 	}

@@ -214,6 +214,7 @@ public:
 	{
 		u32 version;
 		if (f.read_32LE(version) != 1) return false;
+		if (version > 2) return false;
 
 		u8 junk8;
 		u32 junk32;
@@ -243,7 +244,7 @@ public:
 			f.read_32LE(paramCounter);
 		}
 
-		return true;
+		return !f.fail();
 	}
 
 } gxf_hardware;
@@ -2391,43 +2392,45 @@ void NDSGeometryEngine::SaveState_v2(EMUFILE &os)
 	}
 }
 
-void NDSGeometryEngine::LoadState_v2(EMUFILE &is)
+bool NDSGeometryEngine::LoadState_v2(EMUFILE &is)
 {
 	u32 loadingIdx;
 	
-	is.read_32LE(loadingIdx);
+	if (is.read_32LE(loadingIdx) != 1 || loadingIdx > 1) return false;
 	this->_mtxStackIndex[MATRIXMODE_PROJECTION] = (u8)loadingIdx;
 	for (size_t j = 0; j < 16; j++)
 	{
-		is.read_32LE(this->_mtxStackProjection[0][j]);
+		if (is.read_32LE(this->_mtxStackProjection[0][j]) != 1) return false;
 	}
 	
-	is.read_32LE(loadingIdx);
+	if (is.read_32LE(loadingIdx) != 1 || loadingIdx > 0x3F) return false;
 	this->_mtxStackIndex[MATRIXMODE_POSITION] = (u8)loadingIdx;
 	for (size_t i = 0; i < NDSMATRIXSTACK_COUNT(MATRIXMODE_POSITION); i++)
 	{
 		for (size_t j = 0; j < 16; j++)
 		{
-			is.read_32LE(this->_mtxStackPosition[i][j]);
+			if (is.read_32LE(this->_mtxStackPosition[i][j]) != 1) return false;
 		}
 	}
 	
-	is.read_32LE(loadingIdx);
+	if (is.read_32LE(loadingIdx) != 1 || loadingIdx > 0x3F) return false;
 	this->_mtxStackIndex[MATRIXMODE_POSITION_VECTOR] = (u8)loadingIdx;
 	for (size_t i = 0; i < NDSMATRIXSTACK_COUNT(MATRIXMODE_POSITION_VECTOR); i++)
 	{
 		for (size_t j = 0; j < 16; j++)
 		{
-			is.read_32LE(this->_mtxStackPositionVector[i][j]);
+			if (is.read_32LE(this->_mtxStackPositionVector[i][j]) != 1) return false;
 		}
 	}
 	
-	is.read_32LE(loadingIdx);
+	if (is.read_32LE(loadingIdx) != 1 || loadingIdx > 1) return false;
 	this->_mtxStackIndex[MATRIXMODE_TEXTURE] = (u8)loadingIdx;
 	for (size_t j = 0; j < 16; j++)
 	{
-		is.read_32LE(this->_mtxStackTexture[0][j]);
+		if (is.read_32LE(this->_mtxStackTexture[0][j]) != 1) return false;
 	}
+
+	return true;
 }
 
 void NDSGeometryEngine::SaveState_v4(EMUFILE &os)
@@ -3952,6 +3955,7 @@ bool gfx3d_loadstate(EMUFILE &is, int size)
 	int version;
 	if (is.read_32LE(version) != 1) return false;
 	if (size == 8) version = 0;
+	if (version < 0 || version > 4) return false;
 
 	if (CurrentRenderer->GetRenderNeedsFinish())
 	{
@@ -3967,7 +3971,7 @@ bool gfx3d_loadstate(EMUFILE &is, int size)
 		float loadingSortYMin = 0.0f;
 		float loadingSortYMax = 0.0f;
 		
-		is.read_32LE(vertListCount32);
+		if (is.read_32LE(vertListCount32) != 1 || vertListCount32 > VERTLIST_SIZE) return false;
 		gfx3d.gList[gfx3d.pendingListIndex].rawVertCount = vertListCount32;
 		gfx3d.gList[gfx3d.appliedListIndex].rawVertCount = vertListCount32;
 		for (size_t i = 0; i < gfx3d.gList[gfx3d.appliedListIndex].rawVertCount; i++)
@@ -3976,7 +3980,7 @@ bool gfx3d_loadstate(EMUFILE &is, int size)
 			gfx3d.gList[gfx3d.appliedListIndex].rawVtxList[i] = gfx3d.gList[gfx3d.pendingListIndex].rawVtxList[i];
 		}
 		
-		is.read_32LE(polyListCount32);
+		if (is.read_32LE(polyListCount32) != 1 || polyListCount32 > POLYLIST_SIZE) return false;
 		gfx3d.gList[gfx3d.pendingListIndex].rawPolyCount = polyListCount32;
 		gfx3d.gList[gfx3d.appliedListIndex].rawPolyCount = polyListCount32;
 		for (size_t i = 0; i < gfx3d.gList[gfx3d.appliedListIndex].rawPolyCount; i++)
@@ -3984,9 +3988,13 @@ bool gfx3d_loadstate(EMUFILE &is, int size)
 			POLY &p = gfx3d.gList[gfx3d.pendingListIndex].rawPolyList[i];
 			
 			GFX3D_LoadStatePOLY(p, is);
-			is.read_32LE(gfx3d.legacySave.rawPolyViewport[i].value);
-			is.read_floatLE(loadingSortYMin);
-			is.read_floatLE(loadingSortYMax);
+			if (is.fail()) return false;
+			if (p.type != POLYGON_TYPE_TRIANGLE && p.type != POLYGON_TYPE_QUAD) return false;
+			for (size_t j = 0; j < (size_t)p.type; j++)
+				if (p.vertIndexes[j] >= vertListCount32) return false;
+			if (is.read_32LE(gfx3d.legacySave.rawPolyViewport[i].value) != 1) return false;
+			if (is.read_floatLE(loadingSortYMin) != 1) return false;
+			if (is.read_floatLE(loadingSortYMax) != 1) return false;
 			
 			p.viewport = GFX3D_ViewportParse(gfx3d.legacySave.rawPolyViewport[i]);
 			gfx3d.rawPolySortYMin[i] = (s64)( (loadingSortYMin * 4096.0f) + 0.5f );
@@ -3998,12 +4006,12 @@ bool gfx3d_loadstate(EMUFILE &is, int size)
 
 	if (version >= 2)
 	{
-		_gEngine.LoadState_v2(is);
+		if (!_gEngine.LoadState_v2(is)) return false;
 	}
 
 	if (version >= 3)
 	{
-		gxf_hardware.loadstate(is);
+		if (!gxf_hardware.loadstate(is)) return false;
 	}
 
 	if (version >= 4)
@@ -4011,6 +4019,28 @@ bool gfx3d_loadstate(EMUFILE &is, int size)
 		_gEngine.LoadState_v4(is);
 	}
 
+	return !is.fail();
+}
+
+bool gfx3d_IsStateValid()
+{
+	const GeometryEngineLegacySave &state = gfx3d.gEngineLegacySave;
+	if (state.mtxCurrentMode > MATRIXMODE_TEXTURE) return false;
+	if (state.mtxLoad4x4PendingIndex >= 16 || state.mtxLoad4x3PendingIndex >= 16) return false;
+	if (state.mtxMultiply4x4TempIndex >= 16 || state.mtxMultiply4x3TempIndex >= 16) return false;
+	if (state.mtxMultiply3x3TempIndex >= 12) return false;
+	if (state.vtxPosition16CurrentIndex >= 2) return false;
+	if (state.vtxFormat > GFX3D_QUAD_STRIP_LINE) return false;
+	if (state.vecTranslateCurrentIndex >= 3 || state.vecScaleCurrentIndex >= 3) return false;
+	if (state.boxTestCoordCurrentIndex > 4 || state.positionTestCoordCurrentIndex > 2) return false;
+	if (state.shininessTablePendingIndex >= 128 || (state.shininessTablePendingIndex & 3) != 0) return false;
+	if (state.vtxCount >= 4) return false;
+	for (size_t i = 0; i < 4; i++)
+		if (state.vtxIndex[i] >= VERTLIST_SIZE) return false;
+
+	if (gxFIFO.head >= HACK_GXIFO_SIZE || gxFIFO.tail >= HACK_GXIFO_SIZE) return false;
+	if (gxFIFO.size > HACK_GXIFO_SIZE || gxFIFO.matrix_stack_op_size > gxFIFO.size) return false;
+	if (gxPIPE.head >= 4 || gxPIPE.tail >= 4 || gxPIPE.size > 4) return false;
 	return true;
 }
 

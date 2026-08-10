@@ -1006,29 +1006,9 @@ bool CHEATS::save()
 	return didSave;
 }
 
-char *CHEATS::clearCode(char *s)
-{
-	char	*buf = s;
-	if (!s) return NULL;
-	if (!*s) return s;
-
-	for (u32 i = 0; i < strlen(s); i++)
-	{
-		if (s[i] == ';') break;
-		if (strchr(hexValid, s[i]))
-		{
-			*buf = s[i];
-			buf++;
-		}
-	}
-	*buf = 0;
-	return s;
-}
-
 bool CHEATS::load()
 {
 	bool didLoadAllItems = false;
-	int valueReadResult = 0;
 	
 	if (strlen((const char *)this->_filename) == 0)
 	{
@@ -1047,17 +1027,13 @@ bool CHEATS::load()
 		readSize = CHEAT_FILE_MIN_FGETS_BUFFER;
 	}
 	
-	char *buf = (char *)malloc(readSize);
-	
-	readSize *= sizeof(*buf);
-	
-	std::string		codeStr = "";
-	u32				last = 0;
+	std::vector<char> readBuffer(readSize);
+	char *buf = &readBuffer[0];
+	std::string codeStr;
 	u32				line = 0;
 	
 	INFO("Load cheats: %s\n", this->_filename);
 	clear();
-	last = 0; line = 0;
 	while (!flist.eof())
 	{
 		CHEATS_LIST		tmp_cht;
@@ -1090,8 +1066,14 @@ bool CHEATS::load()
 			continue;
 		}
 		
-		codeStr = (char *)(buf + 5);
-		codeStr = clearCode((char *)codeStr.c_str());
+		const char *description = strchr(buf, ';');
+		const char *codeEnd = (description != NULL) ? description : buf + strlen(buf);
+		codeStr.clear();
+		for (const char *cursor = buf + 5; cursor < codeEnd; cursor++)
+		{
+			if (strchr(hexValid, *cursor) != NULL)
+				codeStr += *cursor;
+		}
 		
 		if (codeStr.empty() || (codeStr.length() % 16 != 0))
 		{
@@ -1100,30 +1082,36 @@ bool CHEATS::load()
 		}
 
 		tmp_cht.enabled = (buf[3] == '0') ? 0 : 1;
-		u32 descr_pos = (u32)std::max<s32>((s32)(strchr((char*)buf, ';') - buf), 0);
-		if (descr_pos != 0)
+		if (description != NULL)
 		{
-			strncpy(tmp_cht.description, (buf + descr_pos + 1), sizeof(tmp_cht.description));
+			strncpy(tmp_cht.description, description + 1, sizeof(tmp_cht.description));
 			tmp_cht.description[sizeof(tmp_cht.description) - 1] = '\0';
 		}
 
-		tmp_cht.num = (u32)codeStr.length() / 16;
+		const size_t codeCount = codeStr.length() / 16;
+		if (codeCount > MAX_XX_CODE)
+		{
+			INFO("Cheats: Too many code values at line %i\n", line);
+			continue;
+		}
+		tmp_cht.num = (u32)codeCount;
 		if ((tmp_cht.type == CHEAT_TYPE_INTERNAL) && (tmp_cht.num > 1))
 		{
-			INFO("Cheats: Too many values for internal cheat\n", line);
+			INFO("Cheats: Too many values for internal cheat at line %i\n", line);
 			continue;
 		}
 
+		bool validCode = true;
 		for (u32 i = 0; i < tmp_cht.num; i++)
 		{
 			char tmp_buf[9] = {0};
 
 			strncpy(tmp_buf, &codeStr[i * 16], 8);
-			valueReadResult = sscanf(tmp_buf, "%x", &tmp_cht.code[i][0]);
-			if (valueReadResult == 0)
+			if (sscanf(tmp_buf, "%x", &tmp_cht.code[i][0]) != 1)
 			{
 				INFO("Cheats: Could not read first value at line %i\n", line);
-				continue;
+				validCode = false;
+				break;
 			}
 
 			if (tmp_cht.type == CHEAT_TYPE_INTERNAL)
@@ -1133,20 +1121,17 @@ bool CHEATS::load()
 			}
 			
 			strncpy(tmp_buf, &codeStr[(i * 16) + 8], 8);
-			valueReadResult = sscanf(tmp_buf, "%x", &tmp_cht.code[i][1]);
-			if (valueReadResult == 0)
+			if (sscanf(tmp_buf, "%x", &tmp_cht.code[i][1]) != 1)
 			{
 				INFO("Cheats: Could not read second value at line %i\n", line);
-				continue;
+				validCode = false;
+				break;
 			}
 		}
+		if (!validCode) continue;
 
 		this->_list.push_back(tmp_cht);
-		last++;
 	}
-	
-	free(buf);
-	buf = NULL;
 
 	INFO("Added %i cheat codes\n", this->_list.size());
 	

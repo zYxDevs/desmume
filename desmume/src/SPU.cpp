@@ -741,12 +741,14 @@ bool SPUFifo::load(EMUFILE &fp)
 {
 	u32 version;
 	if (fp.read_32LE(version) != 1) return false;
-	fp.read_32LE(head);
-	fp.read_32LE(tail);
-	fp.read_32LE(size);
+	if (version > 1) return false;
+	if (fp.read_32LE(head) != 1) return false;
+	if (fp.read_32LE(tail) != 1) return false;
+	if (fp.read_32LE(size) != 1) return false;
+	if (head < 0 || head >= 16 || tail < 0 || tail >= 16 || size < 0 || size > 16) return false;
 	for (int i = 0; i < 16; i++)
-		fp.read_16LE(buffer[i]);
-	return true;
+		if (fp.read_16LE(buffer[i]) != 1) return false;
+	return !fp.fail();
 }
 
 void SPU_struct::ProbeCapture(int which)
@@ -1986,6 +1988,7 @@ bool spu_loadstate(EMUFILE &is, int size)
 	//read version
 	u32 version;
 	if (is.read_32LE(version) != 1) return false;
+	if (version > 7) return false;
 
 	SPU_struct *spu = SPU_core;
 	reconstruct(&SPU_core->regs);
@@ -1995,14 +1998,15 @@ bool spu_loadstate(EMUFILE &is, int size)
 		channel_struct &chan = spu->channels[j];
 		is.read_32LE(chan.num);
 		is.read_u8(chan.vol);
-		is.read_u8(chan.volumeDiv);
+		if (is.read_u8(chan.volumeDiv) != 1) return false;
 		if (chan.volumeDiv == 4) chan.volumeDiv = 3;
+		if (chan.volumeDiv >= ARRAY_SIZE(volume_shift)) return false;
 		is.read_u8(chan.hold);
 		is.read_u8(chan.pan);
-		is.read_u8(chan.waveduty);
-		is.read_u8(chan.repeat);
-		is.read_u8(chan.format);
-		is.read_u8(chan.status);
+		if (is.read_u8(chan.waveduty) != 1 || chan.waveduty > 7) return false;
+		if (is.read_u8(chan.repeat) != 1 || chan.repeat > 3) return false;
+		if (is.read_u8(chan.format) != 1 || chan.format >= ARRAY_SIZE(format_shift)) return false;
+		if (is.read_u8(chan.status) != 1 || chan.status > CHANSTAT_PLAY) return false;
 		if (version >= 7) is.read_u8(chan.pcm16bOffs); else chan.pcm16bOffs = 0;
 		is.read_32LE(chan.addr);
 		is.read_16LE(chan.timer);
@@ -2047,7 +2051,7 @@ bool spu_loadstate(EMUFILE &is, int size)
 			is.read_16LE(chan.pcm16b[0]); // chan.pcm16b
 			is.fseek(2, SEEK_CUR);        // chan.pcm16b_last
 		}
-		is.read_32LE(chan.index);
+		if (is.read_32LE(chan.index) != 1 || chan.index < 0 || chan.index >= 89) return false;
 		is.read_16LE(chan.x);
 		if (version < 7) is.fseek(2, SEEK_CUR); // chan.psgnoise_last (LE16)
 
@@ -2104,7 +2108,10 @@ bool spu_loadstate(EMUFILE &is, int size)
 	}
 
 	if (version >= 6)
-		for (int i=0;i<2;i++) spu->regs.cap[i].runtime.fifo.load(is);
+	{
+		for (int i=0;i<2;i++)
+			if (!spu->regs.cap[i].runtime.fifo.load(is)) return false;
+	}
 	else
 		for (int i=0;i<2;i++) spu->regs.cap[i].runtime.fifo.reset();
 
@@ -2119,5 +2126,5 @@ bool spu_loadstate(EMUFILE &is, int size)
 	//copy the core spu (the more accurate) to the user spu
 	SPU_CloneUser();
 
-	return true;
+	return !is.fail();
 }

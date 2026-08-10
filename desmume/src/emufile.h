@@ -130,7 +130,7 @@ public:
 	float read_floatLE();
 	
 	size_t write_buffer(std::vector<u8> &vec);
-	size_t read_buffer(std::vector<u8> &vec);
+	size_t read_buffer(std::vector<u8> &vec, u32 maxSize = 0xFFFFFFFF);
 	
 	size_t write_MemoryStream(EMUFILE_MEMORY &ms);
 	size_t read_MemoryStream(EMUFILE_MEMORY &ms);

@@ -457,23 +457,25 @@ size_t EMUFILE::write_buffer(std::vector<u8> &vec)
 	return (size + 4);
 }
 
-size_t EMUFILE::read_buffer(std::vector<u8> &vec)
+size_t EMUFILE::read_buffer(std::vector<u8> &vec, u32 maxSize)
 {
-	u32 size = 0;
-	
-	if (read_32LE(size) != 1)
+	u32 bufferSize = 0;
+
+	if (read_32LE(bufferSize) != 1)
 		return 0;
-	
-	vec.resize(size);
-	
-	if (size > 0)
+
+	const int position = ftell();
+	const int streamSize = size();
+	if (position < 0 || streamSize < position || bufferSize > maxSize || bufferSize > (u32)(streamSize - position))
 	{
-		size_t ret = fread(&vec[0],size);
-		
-		if (ret != size)
-			return 0;
+		_failbit = true;
+		return 0;
 	}
-	
+
+	vec.resize(bufferSize);
+	if (bufferSize > 0 && fread(&vec[0],bufferSize) != bufferSize)
+		return 0;
+
 	return 1;
 }
 
@@ -493,22 +495,27 @@ size_t EMUFILE::write_MemoryStream(EMUFILE_MEMORY &ms)
 
 size_t EMUFILE::read_MemoryStream(EMUFILE_MEMORY &ms)
 {
-	u32 size = 0;
-	
-	if (read_32LE(size) != 1)
+	u32 streamLength = 0;
+
+	if (read_32LE(streamLength) != 1)
 		return 0;
-	
-	if (size > 0)
+
+	const int position = ftell();
+	const int streamSize = size();
+	if (position < 0 || streamSize < position || streamLength > (u32)(streamSize - position))
 	{
-		std::vector<u8> vec(size);
-		size_t ret = fread(&vec[0],size);
-		
-		if (ret != size)
-			return 0;
-		
-		ms.fwrite(&vec[0],size);
+		_failbit = true;
+		return 0;
 	}
-	
+
+	if (streamLength == 0)
+		return 1;
+
+	std::vector<u8> vec(streamLength);
+	if (fread(&vec[0],streamLength) != streamLength)
+		return 0;
+	ms.fwrite(&vec[0],streamLength);
+
 	return 1;
 }
 
