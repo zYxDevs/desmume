@@ -19,7 +19,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32) && ! defined(__ANDROID__)
+typedef uint32_t u_int;
+#else
 #include <sys/mman.h>
+#endif
 
 #define R11 11
 #define R10 10
@@ -38,6 +42,43 @@
 #define R8 8
 #define R9 9
 
+#define X0_REG      0
+#define X1_REG      1
+#define X2_REG      2
+#define X3_REG      3
+#define X4_REG      4
+#define X5_REG      5
+#define X6_REG      6
+#define X7_REG      7
+#define X8_REG      8
+#define X9_REG      9
+#define X10_REG     10
+#define X11_REG     11
+#define X12_REG     12
+#define X13_REG     13
+#define X14_REG     14
+#define X15_REG     15 
+#define X16_REG     16
+#define X17_REG     17
+#if (defined(_WIN32) || defined(__APPLE__) || defined(__ANDROID__))
+#define X18_REG     23 // x18 is reserved on windows on arm, macos, and android, so we use x23 instead
+#else
+#define X18_REG     18
+#endif
+#define X19_REG     19
+#define X20_REG     20
+#define X21_REG     21
+#define X22_REG     22
+#define X23_REG     23
+#define X24_REG     24
+#define X25_REG     25
+#define X26_REG     26
+#define X27_REG     27
+#define X28_REG     28
+#define x29_REG     29
+#define X30_REG     30
+#define X31_REG     31
+
 #define SHIFT_REG R0
 
 #define WZR 31
@@ -49,7 +90,7 @@ typedef struct s_bytes t_bytes;
 typedef unsigned int (*JittedFunc)();
 
 static void output_w32(t_bytes *bytes, unsigned int word);
-unsigned int genlabel();
+uint64_t genlabel();
 
 static u_int genimm(u_int imm,u_int *encoded)
 {
@@ -183,13 +224,13 @@ static uint32_t genimm2(uint64_t imm, uint32_t regsize, uint32_t * encoded) {
   return 1;
 }
 
-static void emit_branch_label(t_bytes *out, u_int id, int cond);
+static void emit_branch_label(t_bytes *out, uint64_t id, int cond);
 static void emit_test(t_bytes *out, int rs, int rt);
 static void emit_cmpimm(t_bytes *out, int reg, int val);
 static void set_carry_flag(t_bytes *out);
 static void clear_carry_flag(t_bytes *out);
 static void emit_andimm(t_bytes *out,int rs,int imm,int rt);
-static void emit_label(t_bytes *bytes, u_int id);
+static void emit_label(t_bytes *bytes, uint64_t id);
 static void get_carry_flag(t_bytes *out, int reg);
 
 static void emit_lsls_reg(t_bytes *out, int reg, int nreg);
@@ -279,8 +320,8 @@ static void emit_asr64(t_bytes *out, int reg, int num)
 
 static void emit_asr_reg(t_bytes *out, int reg, int nreg) {
 
-    int done=genlabel();
-	int setb=genlabel();
+    uint64_t done=genlabel();
+	uint64_t setb=genlabel();
 	emit_andimm(out, nreg, 0xff, nreg);
 
     emit_cmpimm(out, nreg, 0);
@@ -293,14 +334,14 @@ static void emit_asr_reg(t_bytes *out, int reg, int nreg) {
 	
 	emit_branch_label(out, done, 0xE);
 	
-	emit_label(out, (int)setb);
-	emit_movimm(out, 1<<31, 22);
-	emit_test(out, reg, 22); // test BIT31(reg 22) of original reg 20
+	emit_label(out, setb);
+	emit_movimm(out, 1<<31, X22_REG);
+	emit_test(out, reg, X22_REG); // test BIT31(reg 22) of original reg 20
 	emit_setnz(out, reg);
-	emit_movimm(out, 0xFFFFFFFF, 22);
-	emit_mul(out, reg, 22);
+	emit_movimm(out, 0xFFFFFFFF, X22_REG);
+	emit_mul(out, reg, X22_REG);
 
-    emit_label(out, (int)done);
+    emit_label(out, done);
 }
 
 
@@ -316,7 +357,7 @@ static void emit_ror(t_bytes *out, int reg, int n) {
 static void emit_rrx(t_bytes *out, int reg, int n) {
 	emit_setc(out, 13);
 	output_w32(out, 0x530101AD); // lsl w13, w13, #31
-	emit_andimm(out, reg, 1, 5);
+	emit_andimm(out, reg, 1, X5_REG);
 
 	emit_movimm(out, n, SHIFT_REG);
 	emit_ror_reg(out, reg, SHIFT_REG);
@@ -324,8 +365,8 @@ static void emit_rrx(t_bytes *out, int reg, int n) {
 	emit_or(out, reg, 13, reg);
 }
 static void emit_lsl_reg(t_bytes *out, int reg, int nreg) {
-    int setb=genlabel();
-    int done=genlabel();
+    uint64_t setb=genlabel();
+    uint64_t done=genlabel();
 	
 	emit_andimm(out, nreg, 0xff, nreg);
 
@@ -335,10 +376,10 @@ static void emit_lsl_reg(t_bytes *out, int reg, int nreg) {
     output_w32(out, 0x1ac02000|nreg<<16|reg<<5|reg); // do shift
     emit_branch_label(out, done, 0xE);
     
-    emit_label(out, (int)setb);
+    emit_label(out, setb);
     emit_movimm(out, 0, reg);
 
-    emit_label(out, (int)done);
+    emit_label(out, done);
 }
 
 static void emit_lsl_reg_quick(t_bytes *out, int reg, int nreg) {
@@ -351,8 +392,8 @@ static void emit_lsr_reg_quick(t_bytes *out, int reg, int nreg) {
 
 static void emit_lsr_reg(t_bytes *out, int reg, int nreg)
 {
-    int setb=genlabel();
-    int done=genlabel();
+    uint64_t setb=genlabel();
+    uint64_t done=genlabel();
 	
 	emit_andimm(out, nreg, 0xff, nreg);
 
@@ -362,16 +403,16 @@ static void emit_lsr_reg(t_bytes *out, int reg, int nreg)
     output_w32(out, 0x1ac02400|nreg<<16|reg<<5|reg); // do shift
     emit_branch_label(out, done, 0xE);
     
-    emit_label(out, (int)setb);
+    emit_label(out, setb);
     emit_movimm(out, 0, reg);
 
-    emit_label(out, (int)done);
+    emit_label(out, done);
 }
 
 static void emit_andsimm(t_bytes *out,int rs,int imm,int rt);
 static void emit_ror_reg(t_bytes *out, int reg, int nreg) {
 
-    int done=genlabel();
+    uint64_t done=genlabel();
 	
 	emit_andimm(out, nreg, 0xff, nreg);
 
@@ -382,7 +423,7 @@ static void emit_ror_reg(t_bytes *out, int reg, int nreg) {
 
     output_w32(out, 0x1AC02C00|reg|reg<<5|nreg<<16); // do shift
 
-    emit_label(out, (int)done);
+    emit_label(out, done);
 }
 
 static void emit_lsls(t_bytes *out, int reg, int n) {
@@ -405,7 +446,7 @@ static void emit_rrxs(t_bytes *out, int reg, int n) {
 	
 	emit_setc(out, 13);
 	output_w32(out, 0x530101AD); // lsl w13, w13, #31
-	emit_andimm(out, reg, 1, 5);
+	emit_andimm(out, reg, 1, X5_REG);
 
 	emit_movimm(out, n, SHIFT_REG);
 	emit_ror_reg(out, reg, SHIFT_REG);
@@ -415,10 +456,10 @@ static void emit_rrxs(t_bytes *out, int reg, int n) {
 static void emit_lsls_reg(t_bytes *out, int reg, int nreg) {
 
 
-    int nonzero=genlabel();
-    int done=genlabel();
-    int eq32=genlabel();
-    int gt32=genlabel();
+    uint64_t nonzero=genlabel();
+    uint64_t done=genlabel();
+    uint64_t eq32=genlabel();
+    uint64_t gt32=genlabel();
 	
 	emit_andimm(out, nreg, 0xff, nreg);
 
@@ -432,10 +473,10 @@ static void emit_lsls_reg(t_bytes *out, int reg, int nreg) {
 
     /* end eq 0 */
 
-    emit_label(out, (int)nonzero);
+    emit_label(out, nonzero);
 	
-	emit_mov(out, nreg, 19);
-    emit_mov(out, reg, 20);
+	emit_mov(out, nreg, X19_REG);
+    emit_mov(out, reg, X20_REG);
 
    /* non zero */
     emit_cmpimm(out, nreg, 32);
@@ -443,53 +484,53 @@ static void emit_lsls_reg(t_bytes *out, int reg, int nreg) {
     emit_branch_label(out, gt32, 12); // gt 32
 
     // get last shifted bit
-    emit_movimm(out, 32, 18);
-    output_w32(out, 0x4B130252); // sub w18, w18, w19
+    emit_movimm(out, 32, X18_REG);
+    output_w32(out, 0x4B000000 | (X19_REG << 16) | (X18_REG << 5) | X18_REG);
 
     // perform shifft
     output_w32(out, 0x1AC02000|nreg<<16|reg<<5|reg);
 
-    //emit_test(out, 20, 18);
-    emit_movimm(out, 1, 22);
-    emit_lsl_reg_quick(out, 22, 18);
-    emit_test(out, 20, 22);
+    //emit_test(out, 20, X18_REG);
+    emit_movimm(out, 1, X22_REG);
+    emit_lsl_reg_quick(out, X22_REG, X18_REG);
+    emit_test(out, X20_REG, X22_REG);
 
-    emit_setnz(out, 5);
+    emit_setnz(out, X5_REG);
     emit_branch_label(out, done, 0xE);
 
     /* end non zero */
 
-    emit_label(out, (int)eq32);
+    emit_label(out, eq32);
 
     /* equal 32 */
 
-    emit_movimm(out, 1, 22);
-    emit_test(out, 20, 22); // test BIT0(reg 22) of original reg 20
+    emit_movimm(out, 1, X22_REG);
+    emit_test(out, X20_REG, X22_REG); // test BIT0(reg 22) of original reg 20
 
-    emit_setnz(out, 5);
+    emit_setnz(out, X5_REG);
 	emit_movimm(out, 0, reg);
     emit_branch_label(out, done, 0xE);
 
     /* end equal 32 */
 
-    emit_label(out, (int)gt32);
+    emit_label(out, gt32);
 
     /* gt 32 */
 
     emit_movimm(out, 0, reg);
-    emit_movimm(out, 0, 5);
+    emit_movimm(out, 0, X5_REG);
 
      /* end gt 32 */
 
-    emit_label(out, (int)done);
+    emit_label(out, done);
     emit_cmpimm(out, reg, 0);
 }
 static void emit_lsrs_reg(t_bytes *out, int reg, int nreg) {
 
-    int nonzero=genlabel();
-    int done=genlabel();
-    int eq32=genlabel();
-    int gt32=genlabel();
+    uint64_t nonzero=genlabel();
+    uint64_t done=genlabel();
+    uint64_t eq32=genlabel();
+    uint64_t gt32=genlabel();
 	
 	emit_andimm(out, nreg, 0xff, nreg);
 
@@ -498,16 +539,16 @@ static void emit_lsrs_reg(t_bytes *out, int reg, int nreg) {
 
     /* eq 0 */
 
-    get_carry_flag(out, 5);
+    get_carry_flag(out, X5_REG);
     emit_branch_label(out, done, 0xE);
 
     /* end eq 0 */
 
-    emit_label(out, (int)nonzero);
+    emit_label(out, nonzero);
 	
 	//emit_andimm(out, nreg, 0xff, nreg);
-	emit_mov(out, nreg, 19);
-    emit_mov(out, reg, 20);
+	emit_mov(out, nreg, X19_REG);
+    emit_mov(out, reg, X20_REG);
 
    /* non zero */
     emit_cmpimm(out, nreg, 32);
@@ -515,54 +556,54 @@ static void emit_lsrs_reg(t_bytes *out, int reg, int nreg) {
     emit_branch_label(out, gt32, 12); // gt 32
 
 	// get last shifted bit
-    emit_movimm(out, 1, 18);
-    output_w32(out, 0x4B120272); // sub w18, w19, w18
+    emit_movimm(out, 1, X18_REG);
+    output_w32(out, 0x4B000000 | (X18_REG << 16) | (X19_REG << 5) | X18_REG);
 
     // perform shifft
     output_w32(out, 0x1AC02400|nreg<<16|reg<<5|reg);
 
-    emit_movimm(out, 1, 22);
-    emit_lsl_reg_quick(out, 22, 18);
-    emit_test(out, 20, 22);
+    emit_movimm(out, 1, X22_REG);
+    emit_lsl_reg_quick(out, X22_REG, X18_REG);
+    emit_test(out, X20_REG, X22_REG);
 
-    emit_setnz(out, 5);
+    emit_setnz(out, X5_REG);
     emit_branch_label(out, done, 0xE);
 
     /* end non zero */
 
-    emit_label(out, (int)eq32);
+    emit_label(out, eq32);
 
     /* equal 32 */
 
-    emit_movimm(out, 1<<31, 22);
-    emit_test(out, 20, 22); // test BIT31(reg 22) of original reg 20
+    emit_movimm(out, 1<<31, X22_REG);
+    emit_test(out, X20_REG, X22_REG); // test BIT31(reg 22) of original reg 20
 
-    emit_setnz(out, 5);
+    emit_setnz(out, X5_REG);
 	emit_movimm(out, 0, reg);
 	
     emit_branch_label(out, done, 0xE);
 
     /* end equal 32 */
 
-    emit_label(out, (int)gt32);
+    emit_label(out, gt32);
 
     /* gt 32 */
 
     emit_movimm(out, 0, reg);
-	emit_movimm(out, 0, 5);
+	emit_movimm(out, 0, X5_REG);
     // fall into clrb
 
      /* end gt 32 */
 
-    emit_label(out, (int)done);
+    emit_label(out, done);
 
     emit_cmpimm(out, reg, 0);
 }
 static void emit_asrs_reg(t_bytes *out, int reg, int nreg) {
 
-    int nonzero=genlabel();
-    int done=genlabel();
-    int gteq32=genlabel();
+    uint64_t nonzero=genlabel();
+    uint64_t done=genlabel();
+    uint64_t gteq32=genlabel();
 
 	emit_andimm(out, nreg, 0xff, nreg);
 	
@@ -571,63 +612,63 @@ static void emit_asrs_reg(t_bytes *out, int reg, int nreg) {
 
     /* eq 0 */
 
-    get_carry_flag(out, 5);
+    get_carry_flag(out, X5_REG);
     emit_branch_label(out, done, 0xE);
 
     /* end eq 0 */
 
-    emit_label(out, (int)nonzero);
+    emit_label(out, nonzero);
 	
-	emit_mov(out, nreg, 19);
-    emit_mov(out, reg, 20);
+	emit_mov(out, nreg, X19_REG);
+    emit_mov(out, reg, X20_REG);
 
 	/* non zero */
     emit_cmpimm(out, nreg, 32);
     emit_branch_label(out, gteq32, 10); // gteq 32
 
 	// get last shifted bit
-    emit_movimm(out, 1, 18);
-    output_w32(out, 0x4B120272); // sub w18, w19, w18
+    emit_movimm(out, 1, X18_REG);
+    output_w32(out, 0x4B000000 | (X18_REG << 16) | (X19_REG << 5) | X18_REG);
 
     // perform shifft
     output_w32(out, 0x1AC02800|nreg<<16|reg<<5|reg);
 
-    emit_movimm(out, 1, 22);
-    emit_lsl_reg_quick(out, 22, 18);
-    emit_test(out, 20, 22);
+    emit_movimm(out, 1, X22_REG);
+    emit_lsl_reg_quick(out, X22_REG, X18_REG);
+    emit_test(out, X20_REG, X22_REG);
 
-    emit_setnz(out, 5);
+    emit_setnz(out, X5_REG);
     emit_branch_label(out, done, 0xE);
 
     /* end non zero */
 
-    emit_label(out, (int)gteq32);
+    emit_label(out, gteq32);
 
     /* equal 32 */
 
     // perform shifft
     output_w32(out, 0x1AC02800|nreg<<16|reg<<5|reg);
 
-    emit_movimm(out, 1<<31, 22);
-    emit_test(out, 20, 22); // test BIT31(reg 22) of original reg 20
+    emit_movimm(out, 1<<31, X22_REG);
+    emit_test(out, X20_REG, X22_REG); // test BIT31(reg 22) of original reg 20
 
-    emit_setnz(out, 5);
+    emit_setnz(out, X5_REG);
 	
-	emit_mov(out, 5, reg);
-	emit_movimm(out, 0xFFFFFFFF, 22);
-	emit_mul(out, reg, 22);
+	emit_mov(out, X5_REG, reg);
+	emit_movimm(out, 0xFFFFFFFF, X22_REG);
+	emit_mul(out, reg, X22_REG);
 
-    emit_label(out, (int)done);
+    emit_label(out, done);
 
     emit_cmpimm(out, reg, 0);
 }
 static void emit_rors_reg(t_bytes *out, int reg, int nreg) {
 
-    int nonzero=genlabel();
-    int done=genlabel();
-    int and0=genlabel();
+    uint64_t nonzero=genlabel();
+    uint64_t done=genlabel();
+    uint64_t and0=genlabel();
 
-    emit_mov(out, reg, 20);
+    emit_mov(out, reg, X20_REG);
 	
 	emit_andimm(out, nreg, 0xff, nreg);
 
@@ -641,45 +682,46 @@ static void emit_rors_reg(t_bytes *out, int reg, int nreg) {
 
     /* end eq 0 */
 
-    emit_label(out, (int)nonzero);
+    emit_label(out, nonzero);
 
    /* non zero */
     emit_andimm(out, nreg, 0x1F, nreg);
-	emit_mov(out, nreg, 19);
-    emit_cmpimm(out, 19, 0);
+	emit_mov(out, nreg, X19_REG);
+    emit_cmpimm(out, X19_REG, 0);
     emit_branch_label(out, and0, 0x0); // eq 0
 
 	// get last shifted bit
-    emit_movimm(out, 1, 18);
-    output_w32(out, 0x4B120272); // sub w18, w19, w18
+    emit_movimm(out, 1, X18_REG);
+    //output_w32(out, 0x4B120272); // sub w18, w19, w18
+    output_w32(out, 0x4B000000 | (X18_REG << 16) | (X19_REG << 5) | X18_REG);
 
     // perform shifft
     output_w32(out, 0x1AC02C00|nreg<<16|reg<<5|reg);
 
-    //emit_test(out, 20, 18);
-    emit_movimm(out, 1, 22);
-    emit_lsl_reg_quick(out, 22, 18);
-    emit_test(out, 20, 22);
+    //emit_test(out, 20, X18_REG);
+    emit_movimm(out, 1, X22_REG);
+    emit_lsl_reg_quick(out, X22_REG, X18_REG);
+    emit_test(out, X20_REG, X22_REG);
 
-    emit_setnz(out, 5);
+    emit_setnz(out, X5_REG);
     emit_branch_label(out, done, 0xE);
 
     /* end non zero */
 
-    emit_label(out, (int)and0);
+    emit_label(out, and0);
 
     /* equal 32 */
 
     // perform shifft
-    emit_mov(out, 20, reg);
+    emit_mov(out, X20_REG, reg);
 
-    emit_movimm(out, 1<<31, 22);
-    emit_test(out, 20, 22); // test BIT31(reg 22) of original reg 20
+    emit_movimm(out, 1<<31, X22_REG);
+    emit_test(out, X20_REG, X22_REG); // test BIT31(reg 22) of original reg 20
 
-	emit_setnz(out, 5);
+	emit_setnz(out, X5_REG);
     emit_branch_label(out, done, 0xE);
 
-    emit_label(out, (int)done);
+    emit_label(out, done);
     emit_cmpimm(out, reg, 0);
 }
 static void emit_rrxs_reg(t_bytes *out, int reg, int nreg) {
@@ -800,14 +842,14 @@ static void emit_movs(t_bytes *out, int rs,int rt) {
 
 static void emit_mov_cond(t_bytes *out, int rs,int rt, int cond)
 {
-  int setb=genlabel();
-	int done=genlabel();
+  uint64_t setb=genlabel();
+	uint64_t done=genlabel();
 
   emit_branch_label(out, setb, cond);
   emit_branch_label(out, done, 0xE);
-  emit_label(out, (int)setb);
+  emit_label(out, setb);
   emit_mov(out, rs, rt);
-  emit_label(out, (int)done);
+  emit_label(out, done);
 }
 
 static void emit_movk_lslnum(t_bytes *out, u_int imm,u_int rt, int lsl)
@@ -968,8 +1010,8 @@ static void emit_addimm(t_bytes *out, u_int rs,int imm,u_int rt)
 
 static void emit_addsimm(t_bytes *out, u_int rs,int imm,u_int rt)
 {
-  emit_movimm(out, imm, 16);
-  emit_adds(out, rs, 16, rt);
+  emit_movimm(out, imm, X16_REG);
+  emit_adds(out, rs, X16_REG, rt);
 }
 
 static void emit_cmp(t_bytes *out, int rs,int rt)
@@ -978,156 +1020,159 @@ static void emit_cmp(t_bytes *out, int rs,int rt)
 }
 
 static void emit_smulbb(t_bytes *out, u_int rs1, u_int rs2) {
-  output_w32(out, 0x93403C11|rs1<<5); // SBFX x17, x0, #0, #16
-  output_w32(out, 0x93403C12|rs2<<5); // SBFX x18, x0, #0, #16
+  output_w32(out, 0x93403C00 | (rs1 << 5) | X17_REG); // SBFX x17, x0, #0, #16
+  output_w32(out, 0x93403C00 | (rs2 << 5) | X18_REG); // SBFX x18, x0, #0, #16
 
   // mul
-  output_w32(out, 0x9B207C00|(18<<16)|(17<<5)|rs1);
+  output_w32(out, 0x9B207C00|(X18_REG<<16)|(X17_REG<<5)|rs1);
 }
 
 static void emit_smulbt(t_bytes *out, u_int rs1, u_int rs2) {
-  output_w32(out, 0x93403C11|rs1<<5); // SBFX x17, x0, #0, #16
-  output_w32(out, 0x93507C12|rs2<<5); // SBFX x18, x0, #16, #16
-  // mu;
-  output_w32(out, 0x9B207C00|(18<<16)|(17<<5)|rs1);
+  output_w32(out, 0x93403C00 | (rs1 << 5) | X17_REG); // SBFX x17, x0, #0, #16
+  output_w32(out, 0x93507C00 | (rs2 << 5) | X18_REG); // SBFX x18, x0, #16, #16
+
+  // mul
+  output_w32(out, 0x9B207C00|(X18_REG<<16)|(X17_REG<<5)|rs1);
 }
 
 static void emit_smultb(t_bytes *out, u_int rs1, u_int rs2) {
-  output_w32(out, 0x93507C11|rs1<<5); //SBFX x17, rs1, #16, #16
-  output_w32(out, 0x93403C12|rs2<<5); // SBFX x18, x0, #0, #16
+  output_w32(out, 0x93507C00 | (rs1 << 5) | X17_REG); //SBFX x17, rs1, #16, #16
+  output_w32(out, 0x93403C00 | (rs2 << 5) | X18_REG); // SBFX x18, x0, #0, #16
 
   // mul
-  output_w32(out, 0x9B207C00|(18<<16)|(17<<5)|rs1);
+  output_w32(out, 0x9B207C00|(X18_REG<<16)|(X17_REG<<5)|rs1);
 }
 
 static void emit_smultt(t_bytes *out, u_int rs1, u_int rs2) {
-  output_w32(out, 0x93507C11|rs1<<5); // SBFX x17, rs1, #16, #16
-  output_w32(out, 0x93507C12|rs2<<5); // SBFX x18, rs2, #16, #16
+  output_w32(out, 0x93507C00 | (rs1 << 5) | X17_REG); // SBFX x17, rs1, #16, #16
+  output_w32(out, 0x93507C00 | (rs2 << 5) | X18_REG); // SBFX x18, rs2, #16, #16
 
   // mul
-  output_w32(out, 0x9B207C00|(18<<16)|(17<<5)|rs1);
+  output_w32(out, 0x9B207C00|(X18_REG<<16)|(X17_REG<<5)|rs1);
 }
 
 
 static void emit_smulwt(t_bytes *out, u_int rs1, u_int rs2) {
-  output_w32(out, 0x93507C12|rs1<<5); // SBFX x18, x0, #16, #16
+  output_w32(out, 0x93507C00 | (rs1 << 5) | X18_REG); // SBFX x18, x0, #16, #16
 
   // mul
-  //output_w32(out, 0x9B007C00|(18<<16)|(rs2<<5)|rs1);
-  output_w32(out, 0x9B207C00|(18<<16)|(rs2<<5)|rs1);
+  output_w32(out, 0x9B207C00|(X18_REG<<16)|(rs2<<5)|rs1);
   emit_asr64(out, rs1, 16);
 }
 static void emit_smulwb(t_bytes *out, u_int rs1, u_int rs2) {
-  output_w32(out, 0x93403C12|rs1<<5); // SBFX x18, x0, #0, #16
+  output_w32(out, 0x93403C00 | (rs1 << 5) | X18_REG); // SBFX x18, x0, #0, #16
 
   // mul
-  //output_w32(out, 0x9B007C00|(18<<16)|(rs2<<5)|rs1);
-  output_w32(out, 0x9B207C00|(18<<16)|(rs2<<5)|rs1);
+  output_w32(out, 0x9B207C00|(X18_REG<<16)|(rs2<<5)|rs1);
   
   emit_asr64(out, rs1, 16);
 }
 
 static void emit_smlawb(t_bytes *out, u_int hi, u_int lo, u_int rs1, u_int rs2)
 {
-  output_w32(out, 0x93403C12|rs1<<5); // SBFX x18, x0, #0, #16
-  //output_w32(out, 0x9B007C00|(18<<16)|(rs2<<5)|14);
-  output_w32(out, 0x9B207C00|(18<<16)|(rs2<<5)|14);
-  emit_asr64(out, 14, 16);
-  emit_adds(out, 14, lo, hi); // sets carry flag - need to use in SET_Q
+  output_w32(out, 0x93403C00 | (rs1 << 5) | X18_REG); // SBFX x18, x0, #0, #16
+
+  output_w32(out, 0x9B207C00|(X18_REG<<16)|(rs2<<5)|14);
+  emit_asr64(out, X14_REG, 16);
+  emit_adds(out, X14_REG, lo, hi); // sets carry flag - need to use in SET_Q
 }
 static void emit_smlawt(t_bytes *out, u_int hi, u_int lo, u_int rs1, u_int rs2)
 {
-  output_w32(out, 0x93507C12|rs1<<5); // SBFX x18, x0, #16, #16
-  //output_w32(out, 0x9B007C00|(18<<16)|(rs2<<5)|14);
-  output_w32(out, 0x9B207C00|(18<<16)|(rs2<<5)|14);
-  emit_asr64(out, 14, 16);
-  emit_adds(out, 14, lo, hi); // sets carry flag - need to use in SET_Q
+  output_w32(out, 0x93403C00 | (rs1 << 5) | X18_REG); // SBFX x18, x0, #0, #16
+
+  output_w32(out, 0x9B207C00|(X18_REG<<16)|(rs2<<5)|14);
+  emit_asr64(out, X14_REG, 16);
+  emit_adds(out, X14_REG, lo, hi); // sets carry flag - need to use in SET_Q
 }
 
 static void emit_smlabb(t_bytes *out, u_int hi, u_int lo, u_int rs1, u_int rs2)
 {
-  output_w32(out, 0x93403C11|rs1<<5); // SBFX x17, x0, #0, #16  
-  output_w32(out, 0x93403C12|rs2<<5); // SBFX x18, x0, #0, #16
+  output_w32(out, 0x93403C00 | (rs1 << 5) | X17_REG); // SBFX x17, x0, #0, #16 
+  output_w32(out, 0x93403C00 | (rs2 << 5) | X18_REG); // SBFX x18, x0, #0, #16
 
-  output_w32(out, 0x9B207C00|(18<<16)|(17<<5)|hi);
+  output_w32(out, 0x9B207C00|(X18_REG<<16)|(X17_REG<<5)|hi);
   emit_adds(out, hi, lo, hi); // sets carry flag - need to use in SET_Q
 }
 static void emit_smlabt(t_bytes *out, u_int hi, u_int lo, u_int rs1, u_int rs2)
 {
-  output_w32(out, 0x93403C11|rs1<<5); // SBFX x17, x0, #0, #16
-  output_w32(out, 0x93507C12|rs2<<5); // SBFX x18, x0, #16, #16
+  output_w32(out, 0x93403C00 | (rs1 << 5) | X17_REG); // SBFX x17, x0, #0, #16
+  output_w32(out, 0x93507C00 | (rs2 << 5) | X18_REG); // SBFX x18, x0, #16, #16
 
-  output_w32(out, 0x9B207C00|(18<<16)|(17<<5)|hi);
+  output_w32(out, 0x9B207C00|(X18_REG<<16)|(X17_REG<<5)|hi);
   emit_adds(out, hi, lo, hi); // sets carry flag - need to use in SET_Q
 }
 static void emit_smlatb(t_bytes *out, u_int hi, u_int lo, u_int rs1, u_int rs2)
 {
-  output_w32(out, 0x93507C11|rs1<<5); // SBFX x17, x0, #16, #16
-  output_w32(out, 0x93403C12|rs2<<5); // sbfx x18, x0, #0, #16
+  output_w32(out, 0x93507C00 | (rs1 << 5) | X17_REG); // SBFX x17, x0, #16, #16
+  output_w32(out, 0x93403C00 | (rs2 << 5) | X18_REG); // sbfx x18, x0, #0, #16
 
-  output_w32(out, 0x9B207C00|(18<<16)|(17<<5)|hi);
+  output_w32(out, 0x9B207C00|(X18_REG<<16)|(X17_REG<<5)|hi);
   emit_adds(out, hi, lo, hi); // sets carry flag - need to use in SET_Q
 }
 static void emit_smlatt(t_bytes *out, u_int hi, u_int lo, u_int rs1, u_int rs2)
 {
-  output_w32(out, 0x93507C11|rs1<<5); // SBFX x17, rs1, #16, #16
-  output_w32(out, 0x93507C12|rs2<<5); // SBFX x18, rs2, #16, #16
+  output_w32(out, 0x93507C00 | (rs1 << 5) | X17_REG); // SBFX x17, rs1, #16, #16
+  output_w32(out, 0x93507C00 | (rs2 << 5) | X18_REG); // SBFX x18, rs2, #16, #16
 
-  output_w32(out, 0x9B207C00|(18<<16)|(17<<5)|hi);
+  output_w32(out, 0x9B207C00|(X18_REG<<16)|(X17_REG<<5)|hi);
   emit_adds(out, hi, lo, hi); // sets carry flag - need to use in SET_Q
 }
 
 static void emit_smlalbb(t_bytes *out, u_int hi, u_int lo, u_int rs1, u_int rs2)
 {
-  emit_mov(out, hi, 17); 
-  output_w32(out, 0xB3607C11|lo<<5);       // BFI x17, xhi, #32, #32
+  emit_mov(out, hi, X17_REG);   
+  output_w32(out, 0xB3607C00 | (lo << 5) | X17_REG); // BFI x17, xhi, #32, #32
 
-  output_w32(out, 0x93403C13|rs1<<5); //SBFX x19, rs1, #0, #16
-  output_w32(out, 0x93403C14|rs2<<5); //SBFX x20, rs2, #0, #16
+  output_w32(out, 0x93403C00 | (rs1 << 5) | X19_REG); //SBFX x19, rs1, #0, #16
+  output_w32(out, 0x93403C00 | (rs2 << 5) | X20_REG); //SBFX x20, rs2, #0, #16
 
-  output_w32(out, 0x9B204411|(20<<16)|(19<<5)); // SMADDL x17, w#, w#, x17
+  output_w32(out, 0x9B200000 | (X20_REG << 16) | (X19_REG << 5) | (X17_REG << 10) | X17_REG); // SMADDL x17, w#, w#, x17
   
-  output_w32(out, 0xD360FE20|lo); // lsr lo, x17, #32
-  emit_mov(out, 17, hi);
+  output_w32(out, 0xD360FC00 | (X17_REG << 5) | lo); // lsr lo, x17, #32
+  emit_mov(out, X17_REG, hi);
 }
 static void emit_smlalbt(t_bytes *out, u_int hi, u_int lo, u_int rs1, u_int rs2)
 {
-  emit_mov(out, hi, 17); 
-  output_w32(out, 0xB3607C11|lo<<5);       // BFI x17, xhi, #32, #32
+  emit_mov(out, hi, X17_REG); 
+      
+  output_w32(out, 0xB3607C00 | (lo << 5) | X17_REG); // BFI x17, xhi, #32, #32
 
-  output_w32(out, 0x93403C13|rs1<<5); //SBFX x19, rs1, #0, #16
-  output_w32(out, 0x93507C14|rs2<<5); //SBFX x20, rs2, #16, #16
+  output_w32(out, 0x93403C00 | (rs1 << 5) | X19_REG); //SBFX x19, rs1, #0, #16
+  output_w32(out, 0x93507C00 | (rs2 << 5) | X20_REG); //SBFX x20, rs2, #16, #16
 
-  output_w32(out, 0x9B204411|(20<<16)|(19<<5)); // SMADDL x17, w#, w#, x17
+  output_w32(out, 0x9B200000 | (X20_REG << 16) | (X19_REG << 5) | (X17_REG << 10) | X17_REG); // SMADDL x17, w#, w#, x17
 
-  output_w32(out, 0xD360FE20|lo); // lsr lo, x17, #32
-  emit_mov(out, 17, hi);
+  output_w32(out, 0xD360FC00 | (X17_REG << 5) | lo); // lsr lo, x17, #32
+
+  emit_mov(out, X17_REG, hi);
 }
 static void emit_smlaltb(t_bytes *out, u_int hi, u_int lo, u_int rs1, u_int rs2)
 {
-  emit_mov(out, hi, 17); 
-  output_w32(out, 0xB3607C11|lo<<5);       // BFI x17, xhi, #32, #32
+  emit_mov(out, hi, X17_REG);     
+  output_w32(out, 0xB3607C00 | (lo << 5) | X17_REG); // BFI x17, xhi, #32, #32
 
-  output_w32(out, 0x93507C13|rs1<<5); //sbfx x19, rs1, #16, #16
-  output_w32(out, 0x93403C14|rs2<<5); //sbfx x20, rs2, #0, #16
+  output_w32(out, 0x93507C00 | (rs1 << 5) | X19_REG); //sbfx x19, rs1, #16, #16
+  output_w32(out, 0x93403C00 | (rs2 << 5) | X20_REG); //sbfx x20, rs2, #0, #16
 
-  output_w32(out, 0x9B204411|(20<<16)|(19<<5)); // SMADDL x17, w#, w#, x17
+  output_w32(out, 0x9B200000 | (X20_REG << 16) | (X19_REG << 5) | (X17_REG << 10) | X17_REG); // SMADDL x17, w#, w#, x17
   
-  output_w32(out, 0xD360FE20|lo); // lsr lo, x17, #32
-  emit_mov(out, 17, hi);
+  output_w32(out, 0xD360FC00 | (X17_REG << 5) | lo); // lsr lo, x17, #32
+
+  emit_mov(out, X17_REG, hi);
 }
 static void emit_smlaltt(t_bytes *out, u_int hi, u_int lo, u_int rs1, u_int rs2)
 {
-  emit_mov(out, hi, 17); 
-  output_w32(out, 0xB3607C11|lo<<5);       // BFI x17, xhi, #32, #32
+  emit_mov(out, hi, X17_REG); 
+ 
+  output_w32(out, 0xB3607C00 | (lo << 5) | X17_REG); // BFI x17, xhi, #32, #32
 
-  output_w32(out, 0x93507C13|rs1<<5); //sbfx x19, rs1, #16, #16
-  output_w32(out, 0x93507C14|rs2<<5); //sbfx x20, rs2, #16, #16
+  output_w32(out, 0x93507C00 | (rs1 << 5) | X19_REG); //sbfx x19, rs1, #16, #16
+  output_w32(out, 0x93507C00 | (rs2 << 5) | X20_REG); //sbfx x20, rs2, #16, #16
 
-  output_w32(out, 0x9B204411|(20<<16)|(19<<5)); // SMADDL x17, w#, w#, x17
+  output_w32(out, 0x9B200000 | (X20_REG << 16) | (X19_REG << 5) | (X17_REG << 10) | X17_REG); // SMADDL x17, w#, w#, x17
   
-  output_w32(out, 0xD360FE20|lo); // lsr lo, x17, #32
-  emit_mov(out, 17, hi);
+  output_w32(out, 0xD360FC00 | (X17_REG << 5) | lo); // lsr lo, x17, #32
+  emit_mov(out, X17_REG, hi);
 }
 
 static void emit_mul(t_bytes *out, u_int rs1,u_int rs2)
@@ -1154,77 +1199,80 @@ static void emit_cmpx64(t_bytes *out, int rs) {
 }
 static void emit_umull(t_bytes *out, u_int hi, u_int lo, u_int rs1, u_int rs2)
 {
-  output_w32(out, 0x9BA07C11|(rs2<<16)|(rs1<<5)); // UMADDL x17, w#, w#, XZR
+  output_w32(out, 0x9BA07C00 | (rs2 << 16) | (rs1 << 5) | X17_REG); // UMADDL x17, w#, w#, XZR
   
-  output_w32(out, 0xD360FE20|lo); // lsr lo, x17, #32
-  emit_mov(out, 17, hi);
+  output_w32(out, 0xD360FC00 | (X17_REG << 5) | lo); // lsr lo, x17, #32
+  emit_mov(out, X17_REG, hi);
 }
 static void emit_umulls(t_bytes *out, u_int hi, u_int lo, u_int rs1, u_int rs2)
 {
-  output_w32(out, 0x9BA07C11|(rs2<<16)|(rs1<<5)); // UMADDL x17, w#, w#, XZR
-  emit_cmpx64(out, 17);
+  output_w32(out, 0x9BA07C00 | (rs2 << 16) | (rs1 << 5) | X17_REG); // UMADDL x17, w#, w#, XZR
+  emit_cmpx64(out, X17_REG);
 
-  output_w32(out, 0xD360FE20|lo); // lsr lo, x17, #32
-  emit_mov(out, 17, hi);
+  output_w32(out, 0xD360FC00 | (X17_REG << 5) | lo); // lsr lo, x17, #32
+  emit_mov(out, X17_REG, hi);
 }
 static void emit_umlal(t_bytes *out, u_int hi, u_int lo, u_int rs1, u_int rs2)
 {
-  emit_mov(out, hi, 17); 
-  output_w32(out, 0xB3607C11|lo<<5);       // BFI x17, xhi, #32, #32
+  emit_mov(out, hi, X17_REG); 
+ 
+  output_w32(out, 0xB3607C00 | (lo << 5) | X17_REG); // BFI x17, xhi, #32, #32
 
-  output_w32(out, 0x9BA04411|(rs2<<16)|(rs1<<5)); // UMADDL x17, w#, w#, x17
+  output_w32(out, 0x9B200000 | (rs2 << 16) | (rs1 << 5) | (X17_REG << 10) | X17_REG); // UMADDL x17, w#, w#, x17
 
-  output_w32(out, 0xD360FE20|lo); // lsr lo, x17, #32
-  emit_mov(out, 17, hi);
+  output_w32(out, 0xD360FC00 | (X17_REG << 5) | lo); // lsr lo, x17, #32
+  emit_mov(out, X17_REG, hi);
 }
 static void emit_umlals(t_bytes *out, u_int hi, u_int lo, u_int rs1, u_int rs2)
 {
-  emit_mov(out, hi, 17); 
-  output_w32(out, 0xB3607C11|lo<<5);       // BFI x17, xhi, #32, #32
+  emit_mov(out, hi, X17_REG); 
 
-  output_w32(out, 0x9BA04411|(rs2<<16)|(rs1<<5)); // UMADDL x17, w#, w#, x17
-  emit_cmpx64(out, 17);
+  output_w32(out, 0xB3607C00 | (lo << 5) | X17_REG); // BFI x17, xhi, #32, #32
+
+  output_w32(out, 0x9B200000 | (rs2 << 16) | (rs1 << 5) | (X17_REG << 10) | X17_REG); // UMADDL x17, w#, w#, x17
+  emit_cmpx64(out, X17_REG);
   
-  output_w32(out, 0xD360FE20|lo); // lsr lo, x17, #32
-  emit_mov(out, 17, hi);
+  output_w32(out, 0xD360FC00 | (X17_REG << 5) | lo); // lsr lo, x17, #32
+  emit_mov(out, X17_REG, hi);
 }
 static void emit_smull(t_bytes *out, u_int hi, u_int lo, u_int rs1, u_int rs2)
 {
-  output_w32(out, 0x9B207C11|(rs2<<16)|(rs1<<5)); // SMADDL x17, w#, w#, XZR
+  output_w32(out, 0x9B207C00 | (rs2 << 16) | (rs1 << 5) | X17_REG); // SMADDL x17, w#, w#, XZR
 
-  output_w32(out, 0xD360FE20|lo); // lsr lo, x17, #32
-  emit_mov(out, 17, hi);
+  output_w32(out, 0xD360FC00 | (X17_REG << 5) | lo); // lsr lo, x17, #32
+  emit_mov(out, X17_REG, hi);
 }
 static void emit_smulls(t_bytes *out, u_int hi, u_int lo, u_int rs1, u_int rs2)
 {
+  output_w32(out, 0x9B207C00 | (rs2 << 16) | (rs1 << 5) | X17_REG); // SMADDL x17, w#, w#, XZR
+  emit_cmpx64(out, X17_REG);
 
-  output_w32(out, 0x9B207C11|(rs2<<16)|(rs1<<5)); // SMADDL x17, w#, w#, XZR
-  emit_cmpx64(out, 17);
-
-  output_w32(out, 0xD360FE20|lo); // lsr lo, x17, #32
-  emit_mov(out, 17, hi);
+  output_w32(out, 0xD360FC00 | (X17_REG << 5) | lo); // lsr lo, x17, #32
+  emit_mov(out, X17_REG, hi);
 }
 
 static void emit_smlal(t_bytes *out, u_int hi, u_int lo, u_int rs1, u_int rs2)
 {
-  emit_mov(out, hi, 17); 
-  output_w32(out, 0xB3607C11|lo<<5);       // BFI x17, xhi, #32, #32
+  emit_mov(out, hi, X17_REG); 
+ 
+  output_w32(out, 0xB3607C00 | (lo << 5) | X17_REG); // BFI x17, xhi, #32, #32
 
-  output_w32(out, 0x9B204411|(rs2<<16)|(rs1<<5)); // SMADDL x17, w#, w#, x17
+  output_w32(out, 0x9B200000 | (rs2 << 16) | (rs1 << 5) | (X17_REG << 10) | X17_REG); // SMADDL x17, w#, w#, x17
 
-  output_w32(out, 0xD360FE20|lo); // lsr lo, x17, #32
-  emit_mov(out, 17, hi);
+  output_w32(out, 0xD360FC00 | (X17_REG << 5) | lo); // lsr lo, x17, #32
+  emit_mov(out, X17_REG, hi);
 }
 static void emit_smlals(t_bytes *out, u_int hi, u_int lo, u_int rs1, u_int rs2)
 {
-  emit_mov(out, hi, 17); 
-  output_w32(out, 0xB3607C11|lo<<5);       // BFI x17, xhi, #32, #32
+  emit_mov(out, hi, X17_REG); 
+     
+  output_w32(out, 0xB3607C00 | (lo << 5) | X17_REG); // BFI x17, xhi, #32, #32
 
-  output_w32(out, 0x9B204411|(rs2<<16)|(rs1<<5)); // SMADDL x17, w#, w#, x17
-  emit_cmpx64(out, 17);
+  output_w32(out, 0x9B200000 | (rs2 << 16) | (rs1 << 5) | (X17_REG << 10) | X17_REG); // SMADDL x17, w#, w#, x17
+  emit_cmpx64(out, X17_REG);
 
-  output_w32(out, 0xD360FE20|lo); // lsr lo, x17, #32
-  emit_mov(out, 17, hi); 
+  output_w32(out, 0xD360FC00 | (X17_REG << 5) | lo); // lsr lo, x17, #32
+  emit_mov(out, X17_REG, hi); 
 }
 
 static void emit_clz(t_bytes *out, int rs,int rt)
@@ -1235,7 +1283,7 @@ static void emit_clz(t_bytes *out, int rs,int rt)
 static void emit_teq(t_bytes *out, int rs, int rt)
 {
   output_w32(out, 0x4A000000|16|rs<<5|rt<<16);
-  emit_cmpimm(out, 16, 0);
+  emit_cmpimm(out, X16_REG, 0);
 }
 
 static u_int gencondjmp(intptr_t offset)
@@ -1267,24 +1315,24 @@ static void emit_str64(t_bytes *out, int rs, int rt) {
 }
 
 static void emit_str_cond(t_bytes *out, int rs, int rt, int cond) {
-  int setb=genlabel();
-	int done=genlabel();
+  uint64_t setb=genlabel();
+	uint64_t done=genlabel();
 
 		emit_branch_label(out, setb, cond);
 		emit_branch_label(out, done, 0xE);
 		
-    emit_label(out, (int)setb);
+    emit_label(out, setb);
     emit_str(out, rs, rt);
 
-		emit_label(out, (int)done);
+		emit_label(out, done);
 }
 
 static void emit_ldrb(t_bytes *out, int rs, int rt) {
-	output_w32(out, 0x39400000|rs<<5|rt); // LDRB	R0, [R0] <-- armconverter.com
+	output_w32(out, 0x39400000|rs<<5|rt); // LDRB	R0, [R0]
 }
 
 static void emit_ldrsb(t_bytes *out, int rs, int rt) {
-	output_w32(out, 0x39C00000|rs<<5|rt); // LDRSB	R0, [R0] <-- armconverter.com
+	output_w32(out, 0x39C00000|rs<<5|rt); // LDRSB	R0, [R0]
 }
 
 static void emit_strb(t_bytes *out, int rs, int rt) {
@@ -1292,7 +1340,7 @@ static void emit_strb(t_bytes *out, int rs, int rt) {
 }
 
 static void emit_ldrsw(t_bytes *out, int rs, int rt) {
-	output_w32(out, 0x79C00000|rs<<5|rt); // LDRSB	R0, [R0] <-- armconverter.com
+	output_w32(out, 0x79C00000|rs<<5|rt); // LDRSB	R0, [R0]
 }
 
 static void emit_ldrs(t_bytes *out, int rs, int rt) {
@@ -1300,7 +1348,7 @@ static void emit_ldrs(t_bytes *out, int rs, int rt) {
 }
 
 static void emit_ldrw(t_bytes *out, int rs, int rt) {
-	output_w32(out, 0x79400000|rs<<5|rt); // LDRB	R0, [R0] <-- armconverter.com
+	output_w32(out, 0x79400000|rs<<5|rt); // LDRB	R0, [R0]
 }
 
 static void emit_strw(t_bytes *out, int rs, int rt) {
@@ -1308,25 +1356,25 @@ static void emit_strw(t_bytes *out, int rs, int rt) {
 }
 
 static void emit_str_ptr_cond(t_bytes *out, uintptr_t ptr, int reg, int cond) {
-	emit_ptr(out, (uintptr_t)ptr, R10);
-	emit_str_cond(out, R10, reg, cond);
+	emit_ptr(out, (uintptr_t)ptr, X10_REG);
+	emit_str_cond(out, X10_REG, reg, cond);
 }
 
 static void emit_write_ptr32(t_bytes *out, uintptr_t ptr, u_int val) {
-  emit_ptr(out, (uintptr_t)ptr, R2);
-	emit_movimm(out, val, R4);
-	emit_str(out, R2, R4);
+  emit_ptr(out, (uintptr_t)ptr, X2_REG);
+	emit_movimm(out, val, X4_REG);
+	emit_str(out, X2_REG, X4_REG);
 }
 
 static void emit_write_ptr(t_bytes *out, uintptr_t ptr, uintptr_t val) {
-  emit_ptr(out, ptr, R2);
-	emit_ptr(out, val, R4);
-	emit_str64(out, R2, R4);
+  emit_ptr(out, ptr, X2_REG);
+	emit_ptr(out, val, X4_REG);
+	emit_str64(out, X2_REG, X4_REG);
 }
 
 static void emit_write_ptr32_regptrTO_immFROM(t_bytes *out, int regptr, int val) { /* reg contains ptr */
-	emit_movimm(out, (uintptr_t)val, R10);
-	emit_str(out, regptr, R10);
+	emit_movimm(out, (uintptr_t)val, X10_REG);
+	emit_str(out, regptr, X10_REG);
 }
 static void emit_write_ptr32_regptrTO_regFROM(t_bytes *out, int regptr, int reg) { /* reg contains ptr */
 	emit_str(out, regptr, reg);
@@ -1340,14 +1388,13 @@ static void emit_read_ptr32_regptrFROM_regTO(t_bytes *out, int regptr, int regou
 }
 
 static void emit_write_ptr32_reg(t_bytes *out, uintptr_t ptr, int reg) {
-	//LOGE("pointer = %u", ptr);
-	emit_ptr(out, (uintptr_t)ptr, R8);
-	emit_str(out, R8, reg);
+	emit_ptr(out, (uintptr_t)ptr, X8_REG);
+	emit_str(out, X8_REG, reg);
 }
 
 static void emit_writeBYTE_ptr32_regptrTO_immFROM(t_bytes *out, int regptr, int val) { /* reg contains ptr */
-	emit_movimm(out, (uintptr_t)val, R9);
-	emit_strb(out, regptr, R9);
+	emit_movimm(out, (uintptr_t)val, X9_REG);
+	emit_strb(out, regptr, X9_REG);
 }
 static void emit_writeBYTE_ptr32_regptrTO_regFROM(t_bytes *out, int regptr, int reg) { /* reg contains ptr */
 	emit_strb(out, regptr, reg);
@@ -1362,8 +1409,8 @@ static void emit_readBYTE_ptr32_regptrFROM_regTO(t_bytes *out, int regptr, int r
 }
 
 static void emit_writeWORD_ptr32_regptrTO_immFROM(t_bytes *out, int regptr, int val) { /* reg contains ptr */
-	emit_movimm(out, (uintptr_t)val, R9);
-	emit_strw(out, regptr, R9);
+	emit_movimm(out, (uintptr_t)val, X9_REG);
+	emit_strw(out, regptr, X9_REG);
 }
 static void emit_writeWORD_ptr32_regptrTO_regFROM(t_bytes *out, int regptr, int reg) { /* reg contains ptr */
 	emit_strw(out, regptr, reg);
@@ -1377,86 +1424,86 @@ static void emit_readWORD_ptr32_regptrFROM_regTO(t_bytes *out, int regptr, int r
 }
 
 static void emit_add_ptr32_regptrTO_regFROM(t_bytes *out, int regptr, int reg) { /* reg contains ptr */
-	emit_ldr(out, regptr, R10);
-	emit_add(out, R10, reg, R10);
-	emit_str(out, regptr, R10);
+	emit_ldr(out, regptr, X10_REG);
+	emit_add(out, X10_REG, reg, X10_REG);
+	emit_str(out, regptr, X10_REG);
 }
 static void emit_adds_ptr32_regptrTO_regFROM(t_bytes *out, int regptr, int reg) { /* reg contains ptr */
-	emit_ldr(out, regptr, R10);
-	emit_adds(out, R10, reg, R10);
-	emit_str(out, regptr, R10);
+	emit_ldr(out, regptr, X10_REG);
+	emit_adds(out, X10_REG, reg, X10_REG);
+	emit_str(out, regptr, X10_REG);
 }
 static void emit_add_ptr32_regptrTO_immFROM(t_bytes *out, int regptr, int val) { /* reg contains ptr */
-	emit_movimm(out, (uintptr_t)val, R9);
-	emit_ldr(out, regptr, R10);
-	emit_add(out, R10, R9, R10);
-	emit_str(out, regptr, R10);
+	emit_movimm(out, (uintptr_t)val, X9_REG);
+	emit_ldr(out, regptr, X10_REG);
+	emit_add(out, X10_REG, X9_REG, X10_REG);
+	emit_str(out, regptr, X10_REG);
 }
 
 static void emit_adds_ptr32_regptrTO_immFROM(t_bytes *out, int regptr, int val) { /* reg contains ptr */
-	emit_movimm(out, (uintptr_t)val, R9);
-	emit_ldr(out, regptr, R10);
-	emit_adds(out, R10, R9, R10);
-	emit_str(out, regptr, R10);
+	emit_movimm(out, (uintptr_t)val, X9_REG);
+	emit_ldr(out, regptr, X10_REG);
+	emit_adds(out, X10_REG, X9_REG, X10_REG);
+	emit_str(out, regptr, X10_REG);
 }
 
 static void emit_sub_ptr32_regptrTO_regFROM(t_bytes *out, int regptr, int reg) { /* reg contains ptr */
-	emit_ldr(out, regptr, R10);
-	emit_sub(out, R10, reg, R10);
-	emit_str(out, regptr, R10);
+	emit_ldr(out, regptr, X10_REG);
+	emit_sub(out, X10_REG, reg, X10_REG);
+	emit_str(out, regptr, X10_REG);
 }
 static void emit_subs_ptr32_regptrTO_regFROM(t_bytes *out, int regptr, int reg) { /* reg contains ptr */
-	emit_ldr(out, regptr, R10);
-	emit_subs(out, R10, reg, R10);
-	emit_str(out, regptr, R10);
+	emit_ldr(out, regptr, X10_REG);
+	emit_subs(out, X10_REG, reg, X10_REG);
+	emit_str(out, regptr, X10_REG);
 }
 static void emit_sub_ptr32_regptrTO_immFROM(t_bytes *out, int regptr, int val) { /* reg contains ptr */
-	emit_movimm(out, (uintptr_t)val, R9);
-	emit_ldr(out, regptr, R10);
-	emit_sub(out, R10, R9, R10);
-	emit_str(out, regptr, R10);
+	emit_movimm(out, (uintptr_t)val, X9_REG);
+	emit_ldr(out, regptr, X10_REG);
+	emit_sub(out, X10_REG, X9_REG, X10_REG);
+	emit_str(out, regptr, X10_REG);
 }
 static void emit_subs_ptr32_regptrTO_immFROM(t_bytes *out, int regptr, int val) { /* reg contains ptr */
-	emit_movimm(out, (uintptr_t)val, R9);
-	emit_ldr(out, regptr, R10);
-	emit_subs(out, R10, R9, R10);
-	emit_str(out, regptr, R10);
+	emit_movimm(out, (uintptr_t)val, X9_REG);
+	emit_ldr(out, regptr, X10_REG);
+	emit_subs(out, X10_REG, X9_REG, X10_REG);
+	emit_str(out, regptr, X10_REG);
 }
 
 static void emit_neg_ptr32_regptr(t_bytes *out, int regptr) { /* reg contains ptr */
-	emit_ldr(out, regptr, R10);
-	emit_neg(out, R10, R10);
-	emit_str(out, regptr, R10);
+	emit_ldr(out, regptr, X10_REG);
+	emit_neg(out, X10_REG, X10_REG);
+	emit_str(out, regptr, X10_REG);
 }
 
 static void emit_negs_ptr32_regptr(t_bytes *out, int regptr) { /* reg contains ptr */
-	emit_ldr(out, regptr, R10);
-	emit_negs(out, R10, R10);
-	emit_str(out, regptr, R10);
+	emit_ldr(out, regptr, X10_REG);
+	emit_negs(out, X10_REG, X10_REG);
+	emit_str(out, regptr, X10_REG);
 }
 
 static void emit_ror_ptr32_regptr(t_bytes *out, int regptr, int shift) {
-	emit_ldr(out, regptr, R10);
-	emit_ror(out, R10, shift);
-	emit_str(out, regptr, R10);
+	emit_ldr(out, regptr, X10_REG);
+	emit_ror(out, X10_REG, shift);
+	emit_str(out, regptr, X10_REG);
 }
 
 static void emit_rors_ptr32_regptr(t_bytes *out, int regptr, int shift) {
-	emit_ldr(out, regptr, R10);
-	emit_rors(out, R10, shift);
-	emit_str(out, regptr, R10);
+	emit_ldr(out, regptr, X10_REG);
+	emit_rors(out, X10_REG, shift);
+	emit_str(out, regptr, X10_REG);
 }
 
 static void emit_rors_ptr32_regptr_reg(t_bytes *out, int regptr, int regimm) {
-	emit_ldr(out, regptr, R10);
-	emit_rors_reg(out, R10, regimm);
-	emit_str(out, regptr, R10);
+	emit_ldr(out, regptr, X10_REG);
+	emit_rors_reg(out, X10_REG, regimm);
+	emit_str(out, regptr, X10_REG);
 }
 
 static void emit_ror_ptr32_regptr_reg(t_bytes *out, int regptr, int regimm) {
-	emit_ldr(out, regptr, R10);
-	emit_ror_reg(out, R10, regimm);
-	emit_str(out, regptr, R10);
+	emit_ldr(out, regptr, X10_REG);
+	emit_ror_reg(out, X10_REG, regimm);
+	emit_str(out, regptr, X10_REG);
 }
 
 static void emit_cmpimm(t_bytes *out, int rs,int imm)
@@ -1465,8 +1512,8 @@ static void emit_cmpimm(t_bytes *out, int rs,int imm)
     output_w32(out, 0x7100001F|rs<<5); // cmp w#, #0
   }
   else { 
-    emit_movimm(out, imm, 16);
-    emit_cmp(out, rs, 16);
+    emit_movimm(out, imm, X16_REG);
+    emit_cmp(out, rs, X16_REG);
   }
 }
 
@@ -1492,14 +1539,14 @@ static void emit_orimm(t_bytes *out, int rs,int imm,int rt)
   }else if(false && genimm2(imm,32,&armval)) {
     output_w32(out, 0x32000000|armval<<10|rs<<5|rt);
   }else{
-    emit_movimm(out, imm,R9);
-    output_w32(out, 0x2a000000|R9<<16|rs<<5|rt);
+    emit_movimm(out, imm,X9_REG);
+    output_w32(out, 0x2a000000|X9_REG<<16|rs<<5|rt);
   }
 }
 
 static void emit_xorimm(t_bytes *out, int reg, int val, int rt) {
-		emit_movimm(out, val, R10);
-		emit_xor(out, reg, R10, rt);
+		emit_movimm(out, val, X10_REG);
+		emit_xor(out, reg, X10_REG, rt);
 }
 
 static void emit_andimm(t_bytes *out,int rs,int imm,int rt)
@@ -1510,8 +1557,8 @@ static void emit_andimm(t_bytes *out,int rs,int imm,int rt)
   }else if(false && genimm2((uint64_t)imm,32,&armval)) {
     output_w32(out, 0x12000000|armval<<10|rs<<5|rt);
   }else{
-    emit_movimm(out, imm,R10);
-    output_w32(out, 0x0a000000|R10<<16|rs<<5|rt);
+    emit_movimm(out, imm,X10_REG);
+    output_w32(out, 0x0a000000|X10_REG<<16|rs<<5|rt);
   }
 }
 
@@ -1524,54 +1571,54 @@ static void emit_andsimm(t_bytes *out,int rs,int imm,int rt)
   }else if(genimm2((uint64_t)imm,32,&armval)) {
     output_w32(out, 0x72000000|armval<<10|rs<<5|rt);
   }else{
-    emit_movz(out, imm,R10);
-    output_w32(out, 0x6a000000|R10<<16|rs<<5|rt);
+    emit_movz(out, imm,X10_REG);
+    output_w32(out, 0x6a000000|X10_REG<<16|rs<<5|rt);
   }
 }
 
 static void emit_subimm(t_bytes *out, int reg, int val, int rt) {
-	emit_movimm(out, val, R10);
-	emit_sub(out, reg, R10, rt);
+	emit_movimm(out, val, X10_REG);
+	emit_sub(out, reg, X10_REG, rt);
 }
 
 static void emit_subsimm(t_bytes *out, int reg, int val, int rt) {
-	emit_movimm(out, val, R10);
-	emit_subs(out, reg, R10, rt);
+	emit_movimm(out, val, X10_REG);
+	emit_subs(out, reg, X10_REG, rt);
 }
 
 static void emit_and_ptr32_regptr(t_bytes *out, int regptr, int bits) {
-	emit_ldr(out, regptr, 13);
-	emit_andimm(out, 13, bits, 13);
-	emit_str(out, regptr, 13);
+	emit_ldr(out, regptr, X13_REG);
+	emit_andimm(out, X13_REG, bits, X13_REG);
+	emit_str(out, regptr, X13_REG);
 }
 
 static void emit_or_ptr32_regptr(t_bytes *out, int regptr, int bits) {
-	emit_ldr(out, regptr, 13);
-	emit_orimm(out, 13, bits, 13);
-	emit_str(out, regptr, 13);
+	emit_ldr(out, regptr, X13_REG);
+	emit_orimm(out, X13_REG, bits, X13_REG);
+	emit_str(out, regptr, X13_REG);
 }
 
 static void emit_or_ptr8_regptr_reg(t_bytes *out, int regptr, int reg) {
-	emit_ldrb(out, regptr, 13);
-	emit_or(out, 13, reg, 13);
-	emit_strb(out, regptr, 13);
+	emit_ldrb(out, regptr, X13_REG);
+	emit_or(out, X13_REG, reg, X13_REG);
+	emit_strb(out, regptr, X13_REG);
 }
 static void emit_or_ptr8_regptr_imm(t_bytes *out, int regptr, int imm) {
-	emit_ldrb(out, regptr, 13);
-	emit_orimm(out, 13, imm, 13);
-	emit_strb(out, regptr, 13);
+	emit_ldrb(out, regptr, X13_REG);
+	emit_orimm(out, X13_REG, imm, X13_REG);
+	emit_strb(out, regptr, X13_REG);
 }
 
 static void emit_or_ptr32_regptr_reg(t_bytes *out, int regptr, int reg) {
-	emit_ldr(out, regptr, 13);
-	emit_or(out, 13, reg, 13);
-	emit_str(out, regptr, 13);
+	emit_ldr(out, regptr, X13_REG);
+	emit_or(out, X13_REG, reg, X13_REG);
+	emit_str(out, regptr, X13_REG);
 }
 
 static void emit_and_ptr32_regptr_reg(t_bytes *out, int regptr, int reg) {
-	emit_ldr(out, regptr, 13);
-	emit_and(out, 13, reg, 13);
-	emit_str(out, regptr, 13);
+	emit_ldr(out, regptr, X13_REG);
+	emit_and(out, X13_REG, reg, X13_REG);
+	emit_str(out, regptr, X13_REG);
 }
 
 #define Z 0
@@ -1605,9 +1652,9 @@ static void emit_seto(t_bytes *out, int reg) {
 }
 
 static void emit_write_ptr32_reg_byte(t_bytes *out, uintptr_t ptr, int reg) {
-	emit_movimm(out, (uintptr_t)ptr, R8);
+	emit_movimm(out, (uintptr_t)ptr, X8_REG);
 
-	emit_strb(out, R8, reg);
+	emit_strb(out, X8_REG, reg);
 }
 
 static void emit_lea_reg_reg(t_bytes *out, int reg1, int reg, int scale, int outreg) {
@@ -1615,44 +1662,44 @@ static void emit_lea_reg_reg(t_bytes *out, int reg1, int reg, int scale, int out
 	else if (scale == 4) emit_lsl(out, reg, 2);  // MOV r10, r10, LSL #2 (multiple by 4)
 	else if (scale == 8) emit_lsl(out, reg, 3);  // MOV r10, r10, LSL #3 (multiple by 8)
 	
-	emit_add(out, reg, reg1, R10);
-	emit_mov(out,  R10,outreg );
+	emit_add(out, reg, reg1, X10_REG);
+	emit_mov(out,  X10_REG,outreg );
 }
 
 static void emit_lea_ptr_reg(t_bytes *out, int ptr, int reg, int scale, int outreg) {
-	emit_movimm(out, ptr, R10);
+	emit_movimm(out, ptr, X10_REG);
 	
 	if (scale == 2)      emit_lsl(out, reg, 1);  // MOV r10, r10, LSL #1 (multiple by 2)
 	else if (scale == 4) emit_lsl(out, reg, 2);  // MOV r10, r10, LSL #2 (multiple by 4)
 	else if (scale == 8) emit_lsl(out, reg, 3);  // MOV r10, r10, LSL #3 (multiple by 8)	
 	
-	emit_add(out, reg, R10, R10);
-	emit_mov(out, R10, outreg);
+	emit_add(out, reg, X10_REG, X10_REG);
+	emit_mov(out, X10_REG, outreg);
 }
 
 static void emit_lea_ptr_val(t_bytes *out, int ptr, int val, int scale, int outreg) {
-	emit_movimm(out, ptr, R10);
-	emit_movimm(out, val, R9);
+	emit_movimm(out, ptr, X10_REG);
+	emit_movimm(out, val, X9_REG);
 	
-	if (scale == 2)      emit_lsl(out, R9, 2);  // MOV r10, r10, LSL #1 (multiple by 2)
-	else if (scale == 4) emit_lsl(out, R9, 4);  // MOV r10, r10, LSL #2 (multiple by 4)
-	else if (scale == 8) emit_lsl(out, R9, 8);  // MOV r10, r10, LSL #3 (multiple by 8)
+	if (scale == 2)      emit_lsl(out, X9_REG, 2);  // MOV r10, r10, LSL #1 (multiple by 2)
+	else if (scale == 4) emit_lsl(out, X9_REG, 4);  // MOV r10, r10, LSL #2 (multiple by 4)
+	else if (scale == 8) emit_lsl(out, X9_REG, 8);  // MOV r10, r10, LSL #3 (multiple by 8)
 	
-	emit_add(out, R9, R10, R10);
+	emit_add(out, X9_REG, X10_REG, X10_REG);
 
-	emit_mov(out, outreg, R10);
+	emit_mov(out, outreg, X10_REG);
 }
 
 static void clear_carry_flag(t_bytes *out) {
-  output_w32(out, 0xD53B4213); /* mrs x19, nzcv */
-	output_w32(out, 0x9262FA73); // bic x19, x19, #(1<<29)
-	output_w32(out, 0xD51B4213); // msr    nzcv, x19
+  output_w32(out, 0xD53B4200 | X19_REG); /* mrs x19, nzcv */
+  output_w32(out, 0x9262FA00 | (X19_REG << 5) | X19_REG); // bic x19, x19, #(1<<29)
+  output_w32(out, 0xD51B4200 | X19_REG); // msr    nzcv, x19
 }
 
 static void set_carry_flag(t_bytes *out) {
-  output_w32(out, 0xD53B4213); /* mrs x19, nzcv */
-	output_w32(out, 0xB2630273); // orr x19, x19, #(1<<29)
-	output_w32(out, 0xD51B4213); // msr    nzcv, x19
+  output_w32(out, 0xD53B4200 | X19_REG); /* mrs x19, nzcv */
+  output_w32(out, 0xB2630200 | (X19_REG << 5) | X19_REG); // orr x19, x19, #(1<<29)
+  output_w32(out, 0xD51B4200 | X19_REG); // msr    nzcv, x19
 }
 
 static void get_flags(int reg, int v);
@@ -1664,24 +1711,24 @@ static void get_carry_flag(t_bytes *out, int reg) {
 }
 
 static void emit_read_ptr32_reg(t_bytes *out, uintptr_t ptr, int rs) {
-	emit_ptr(out, (uintptr_t)ptr, R10);	
-	emit_ldr(out, R10, rs);
+	emit_ptr(out, (uintptr_t)ptr, X10_REG);	
+	emit_ldr(out, X10_REG, rs);
 }
 
 static void emit_read_ptr64_reg(t_bytes *out, uintptr_t ptr, int rs) {
-	emit_ptr(out, (uintptr_t)ptr, R10);	
-	emit_ldr64(out, R10, rs);
+	emit_ptr(out, (uintptr_t)ptr, X10_REG);	
+	emit_ldr64(out, X10_REG, rs);
 }
 
 static void emit_read_ptr32_reg_byte(t_bytes *out, uintptr_t ptr, int rs) {
-	emit_ptr(out, (uintptr_t)ptr, R8);
-	emit_ldrb(out, R8, rs);
+	emit_ptr(out, (uintptr_t)ptr, X8_REG);
+	emit_ldrb(out, X8_REG, rs);
 }
 
 
 static void emit_var_copy32(t_bytes *out, uintptr_t from, uintptr_t to) {
-	emit_ptr(out, (uintptr_t)from, R7);
-	emit_ptr(out, (uintptr_t)to, R7);
+	emit_ptr(out, (uintptr_t)from, X7_REG);
+	emit_ptr(out, (uintptr_t)to, X7_REG);
 }
 
 static void emit_var_copy32_reg(t_bytes *out, int from, int to) {
@@ -1689,46 +1736,46 @@ static void emit_var_copy32_reg(t_bytes *out, int from, int to) {
 }
 
 static void emit_set_ptr_imm(t_bytes *out, uintptr_t ptr, int set) {
-	emit_movimm(out, set, R10);
-	emit_write_ptr32_reg(out, ptr, R10);
+	emit_movimm(out, set, X10_REG);
+	emit_write_ptr32_reg(out, ptr, X10_REG);
 }
 
 static void emit_inc_ptr_imm(t_bytes *out, uintptr_t ptr, int add) {
-	emit_read_ptr32_reg(out, ptr, R10);
+	emit_read_ptr32_reg(out, ptr, X10_REG);
 	if (add > 0) {
-		emit_movimm(out, add, R9);
-		emit_add(out, R10, R9, R10);
+		emit_movimm(out, add, X9_REG);
+		emit_add(out, X10_REG, X9_REG, X10_REG);
 	}
 	else {
-		emit_movimm(out, add*-1, R9);
-		emit_sub(out, R10, R9, R10);
+		emit_movimm(out, add*-1, X9_REG);
+		emit_sub(out, X10_REG, X9_REG, X10_REG);
 	}
-	emit_write_ptr32_reg(out, ptr, R10);
+	emit_write_ptr32_reg(out, ptr, X10_REG);
 }
 
 static void emit_sub_ptr_imm(t_bytes *out, uintptr_t ptr, int minus) {
-	emit_read_ptr32_reg(out, ptr, R10);
-	emit_movimm(out, minus, R9);
-	emit_sub(out, R10, R9, R10);
-	emit_write_ptr32_reg(out, ptr, R10);
+	emit_read_ptr32_reg(out, ptr, X10_REG);
+	emit_movimm(out, minus, X9_REG);
+	emit_sub(out, X10_REG, X9_REG, X10_REG);
+	emit_write_ptr32_reg(out, ptr, X10_REG);
 }
 
 static void emit_inc_ptr(t_bytes *out, uintptr_t ptr, uintptr_t ptr2) {
-	emit_read_ptr32_reg(out, ptr, R2);
-	emit_read_ptr32_reg(out, ptr2, R3);
-	emit_add(out, R2, R3, R2);
-	emit_write_ptr32_reg(out, ptr, R2);
+	emit_read_ptr32_reg(out, ptr, X2_REG);
+	emit_read_ptr32_reg(out, ptr2, X3_REG);
+	emit_add(out, X2_REG, X3_REG, X2_REG);
+	emit_write_ptr32_reg(out, ptr, X2_REG);
 }
 
 static void emit_inc_ptr_reg(t_bytes *out, uintptr_t ptr, uintptr_t ptr2, int reg) {
-	emit_read_ptr32_reg(out, ptr, R7);
-	emit_read_ptr32_reg(out, ptr2, R9);
-	emit_add(out, reg, R9, R7);
+	emit_read_ptr32_reg(out, ptr, X7_REG);
+	emit_read_ptr32_reg(out, ptr2, X9_REG);
+	emit_add(out, reg, X9_REG, X7_REG);
 }
 
 static void emit_inc_reg(t_bytes *out, uintptr_t ptr, int reg) {
-	emit_read_ptr32_reg(out, ptr, R9);
-	emit_add(out, reg, R9, reg);
+	emit_read_ptr32_reg(out, ptr, X9_REG);
+	emit_add(out, reg, X9_REG, reg);
 }
 
 static void emit_brk(t_bytes *out) {
@@ -1736,37 +1783,15 @@ static void emit_brk(t_bytes *out) {
 }
 
 static void save(t_bytes *out) {
-// if debug
-#ifdef DEBUG_JIT
-  output_w32(out, 0xA9BF0BE1);   // stp x1, x2, [sp, #-16]!
-  output_w32(out, 0xA9BF13E3);   // stp x3, x4, [sp, #-16]!
-  output_w32(out, 0xA9BF1BE5);   // stp x5, x6, [sp, #-16]!
-  output_w32(out, 0xA9BF23E7);   // stp x7, x8, [sp, #-16]!
-  output_w32(out, 0xA9BF2BE9);   // stp x9, x10, [sp, #-16]!
-  output_w32(out, 0xA9BF33EB);   // stp x11, x12, [sp, #-16]!
-#endif
-
-// end if debug
   output_w32(out, 0xA9BF53F3);   // stp x19, x20, [sp, #-16]!
   output_w32(out, 0xA9BF5BF5);   // stp x21, x22, [sp, #-16]!
-  output_w32(out, 0xF81F0FF7);   // str x23, [sp, #-16]!
+  output_w32(out, 0xA9BF63F7);   // stp x23, x24, [sp, #-16]!
 }
 
 static void restore(t_bytes *out) {
-  output_w32(out, 0xF84107F7);   // ldr x23, [sp], #16
+  output_w32(out, 0xA8C163F7);   // ldp x23, x24, [sp], #16
   output_w32(out, 0xA8C15BF5);   // ldp x21, x22, [sp], #16
   output_w32(out, 0xA8C153F3);   // ldp x19, x20, [sp], #16
-  // if debug
-
-#ifdef DEBUG_JIT
-  output_w32(out, 0xA8C133EB);   // ldp x11, x12, [sp], #16
-  output_w32(out, 0xA8C12BE9);   // ldp x9, x10, [sp], #16
-  output_w32(out, 0xA8C123E7);   // ldp x7, x8, [sp], #16
-  output_w32(out, 0xA8C11BE5);   // ldp x5, x6, [sp], #16
-  output_w32(out, 0xA8C113E3);   // ldp x3, x4, [sp], #16
-  output_w32(out, 0xA8C10BE1);   // ldp x1, x2, [sp], #16
-#endif
-  // end if debug
 }
 
 static void emit_startfunc(t_bytes *out) {
@@ -1775,7 +1800,6 @@ static void emit_startfunc(t_bytes *out) {
 }
 
 static void emit_endfunc(t_bytes *out) {
-
   restore(out);
 
 	output_w32(out, 0xA8C177FE); // ldp lr, fp, [sp], #16
@@ -1783,34 +1807,29 @@ static void emit_endfunc(t_bytes *out) {
 }
 
 static void save_call(t_bytes *out) {
-// if debug
   output_w32(out, 0xA9BF0BE1);   // stp x1, x2, [sp, #-16]!
   output_w32(out, 0xA9BF13E3);   // stp x3, x4, [sp, #-16]!
   output_w32(out, 0xA9BF1BE5);   // stp x5, x6, [sp, #-16]!
   output_w32(out, 0xA9BF23E7);   // stp x7, x8, [sp, #-16]!
   output_w32(out, 0xA9BF2BE9);   // stp x9, x10, [sp, #-16]!
   output_w32(out, 0xA9BF33EB);   // stp x11, x12, [sp, #-16]!
-/*
-// end if debug
-  output_w32(out, 0xA9BF53F3);   // stp x19, x20, [sp, #-16]!
-  output_w32(out, 0xA9BF5BF5);   // stp x21, x22, [sp, #-16]!
-  output_w32(out, 0xF81F0FF7);   // str x23, [sp, #-16]!*/
+  
+  #if (defined(_WIN32) || defined(__APPLE__) || defined(__ANDROID__))
+  output_w32(out, 0xF81F0FF7);   // str x23, [sp, #-16]!
+  #endif
 }
 
 static void restore_call(t_bytes *out) {
-/*  output_w32(out, 0xF84107F7);   // ldr x23, [sp], #16
-  output_w32(out, 0xA8C15BF5);   // ldp x21, x22, [sp], #16
-  output_w32(out, 0xA8C153F3);   // ldp x19, x20, [sp], #16
-  // if debug
+  #if (defined(_WIN32) || defined(__APPLE__) || defined(__ANDROID__))
+  output_w32(out, 0xF84107F7);   // ldr x23, [sp], #16
+  #endif
 
-*/
   output_w32(out, 0xA8C133EB);   // ldp x11, x12, [sp], #16
   output_w32(out, 0xA8C12BE9);   // ldp x9, x10, [sp], #16
   output_w32(out, 0xA8C123E7);   // ldp x7, x8, [sp], #16
   output_w32(out, 0xA8C11BE5);   // ldp x5, x6, [sp], #16
   output_w32(out, 0xA8C113E3);   // ldp x3, x4, [sp], #16
   output_w32(out, 0xA8C10BE1);   // ldp x1, x2, [sp], #16
-  // end if debug
 }
 
 static void callR3(t_bytes *out) {
@@ -1839,94 +1858,92 @@ static void callR8(t_bytes *out) {
   restore_call(out);
 }
 
-
 //-----------------------------------------------------------------------------
 //   Shifting macros
 //-----------------------------------------------------------------------------
 #define SET_NZCV(sign) { \
 	JIT_COMMENT("SET_NZCV"); \
-	output_w32(g_out, 0xD53B4201); /* mrs x1, nzcv */ \
+	output_w32(g_out, 0xD53B4200 | X1_REG); /* mrs x1, nzcv */ \
 	flags_ptr(y_reg, VALUE); \
-	output_w32(g_out, 0xD358FC21); /* lsr x1, x1, #0x18 */\
-	output_w32(g_out, 0x927C0C21); /* and x1, x1, #0xf0 */ \
-	output_w32(g_out, 0x92400D29); /* and x9, x9, #0xf */ \
-	emit_or64(g_out, R1, y_reg, R1); \
-	emit_writeBYTE_ptr32_regptrTO_regFROM(g_out, CACHED_PTR(flags_ptr(R0, ADDRESS)), R1); \
+	output_w32(g_out, 0xD358FC00 | (X1_REG << 5) | X1_REG); /* lsr x1, x1, #0x18 */\
+	output_w32(g_out, 0x927C0C00 | (X1_REG << 5) | X1_REG); /* and x1, x1, #0xf0 */ \
+	output_w32(g_out, 0x92400D00 | (X9_REG << 5) | X9_REG); /* and x9, x9, #0xf */ \
+	emit_or64(g_out, X1_REG, y_reg, X1_REG); \
+	emit_writeBYTE_ptr32_regptrTO_regFROM(g_out, CACHED_PTR(flags_ptr(X0_REG, ADDRESS)), X1_REG); \
 }
 
 #define SET_NZC { \
 	JIT_COMMENT("SET_NZC"); \
-	output_w32(g_out, 0xD53B4201); /* mrs x1, nzcv */ \
+	output_w32(g_out, 0xD53B4200 | X1_REG); /* mrs x1, nzcv */ \
 	flags_ptr(y_reg, VALUE); \
-	output_w32(g_out, 0xD358FC21); /* lsr x1, x1, #0x18 */\
-	output_w32(g_out, 0x927A0421); /* and x1, x1, #0xc0 */ \
-	if (cf_change) { output_w32(g_out, 0xAA051421); /* orr x1, x1, x5, lsl #5  - x5 == rcf */ }   \
-	output_w32(g_out, cf_change ? 0x92401129 /* and x9, x9, #0x1f */ : 0x92401529 /* and x9, x9, #0x3f */ ); \
-	emit_or64(g_out, R1, y_reg, R1); \
-	emit_writeBYTE_ptr32_regptrTO_regFROM(g_out, CACHED_PTR(flags_ptr(R0, ADDRESS)), R1); \
+	output_w32(g_out, 0xD358FC00 | (X1_REG << 5) | X1_REG); /* lsr x1, x1, #0x18 */\
+	output_w32(g_out, 0x927A0400 | (X1_REG << 5) | X1_REG); /* and x1, x1, #0xc0 */ \
+	if (cf_change) {  output_w32(g_out, 0xAA000000 | (X5_REG << 16) | (X5_REG << 10) | (X1_REG << 5) | X1_REG); /* orr x1, x1, x5, lsl #5  - x5 == rcf */ }   \
+  output_w32(g_out, (cf_change ? 0x92401100 : 0x92401500) | (X9_REG << 5) | X9_REG); \
+	emit_or64(g_out, X1_REG, y_reg, X1_REG); \
+	emit_writeBYTE_ptr32_regptrTO_regFROM(g_out, CACHED_PTR(flags_ptr(X0_REG, ADDRESS)), X1_REG); \
 }
 
 #define SET_NZC_SHIFTS_ZERO(cf) { \
 	JIT_COMMENT("SET_NZC_SHIFTS_ZERO"); \
 	flags_ptr(R3, VALUE); \
-	emit_and_ptr32_regptr(g_out, CACHED_PTR(flags_ptr(R1, ADDRESS)), 0x1F); \
+	emit_and_ptr32_regptr(g_out, CACHED_PTR(flags_ptr(X1_REG, ADDRESS)), 0x1F); \
 	if(cf) \
 	{ \
 		emit_lsl(g_out, rcf_reg, 5); \
 		emit_orimm(g_out,rcf_reg, (1<<6), rcf_reg); \
-		emit_or_ptr32_regptr_reg(g_out, CACHED_PTR(flags_ptr(R1, ADDRESS)), rcf_reg); \
+		emit_or_ptr32_regptr_reg(g_out, CACHED_PTR(flags_ptr(X1_REG, ADDRESS)), rcf_reg); \
 	} \
 	else \
-		emit_or_ptr32_regptr(g_out, CACHED_PTR(flags_ptr(R1, ADDRESS)), (1<<6)); \
+		emit_or_ptr32_regptr(g_out, CACHED_PTR(flags_ptr(X1_REG, ADDRESS)), (1<<6)); \
 }
 
 #define SET_NZ(clear_cv) { \
-	output_w32(g_out, 0xD53B4201); /* mrs x1, nzcv */ \
+	output_w32(g_out, 0xD53B4200 | X1_REG); /* mrs x1, nzcv */ \
 	flags_ptr(y_reg, VALUE); \
-	output_w32(g_out, 0xD358FC21); /* lsr x1, x1, #0x18 */ \
-	output_w32(g_out, 0x927A0421); /* and x1, x1, #0xc0 */ \
-	output_w32(g_out, clear_cv ? 0x92400D29 /* and x9, x9, #0xf */  : 0x92401529 /* and x9, x9, #0x3f */ );\
-	emit_or64(g_out, R1, y_reg, R1); \
-	emit_writeBYTE_ptr32_regptrTO_regFROM(g_out, CACHED_PTR(flags_ptr(R0, ADDRESS)), R1); \
+	output_w32(g_out, 0xD358FC00 | (X1_REG << 5) | X1_REG); /* lsr x1, x1, #0x18 */ \
+	output_w32(g_out, 0x927A0400 | (X1_REG << 5) | X1_REG); /* and x1, x1, #0xc0 */ \
+  output_w32(g_out, (clear_cv ? 0x92400D00 : 0x92401500) | (X9_REG << 5) | X9_REG); \
+	emit_or64(g_out, X1_REG, y_reg, X1_REG); \
+	emit_writeBYTE_ptr32_regptrTO_regFROM(g_out, CACHED_PTR(flags_ptr(X0_REG, ADDRESS)), X1_REG); \
 }
 
 #define SET_N { \
-	output_w32(g_out, 0xD53B4201); /* mrs x1, nzcv */ \
+	output_w32(g_out, 0xD53B4200 | X1_REG); /* mrs x1, nzcv */ \
 	flags_ptr(y_reg, VALUE); \
-	output_w32(g_out, 0xD358FC21); /* lsr x1, x1, #0x18 */\
-	output_w32(g_out, 0x92790021); /* and x1, x1, #0x80 */ \
-	output_w32(g_out, 0x92401929); /* and x9, x9, #0x7f */ \
+	output_w32(g_out, 0xD358FC00 | (X1_REG << 5) | X1_REG); /* lsr x1, x1, #0x18 */\
+	output_w32(g_out, 0x92790000 | (X1_REG << 5) | X1_REG); /* and x1, x1, #0x80 */ \
+	output_w32(g_out, 0x92401900 | (X9_REG << 5) | X9_REG); /* and x9, x9, #0x7f */ \
 	emit_or64(g_out, R1, y_reg, R1); \
-	emit_writeBYTE_ptr32_regptrTO_regFROM(g_out, CACHED_PTR(flags_ptr(R0, ADDRESS)), R1); \
+	emit_writeBYTE_ptr32_regptrTO_regFROM(g_out, CACHED_PTR(flags_ptr(X0_REG, ADDRESS)), X1_REG); \
 }
 
 #define SET_Z { \
-	output_w32(g_out, 0xD53B4201); /* mrs x1, nzcv */ \
+	output_w32(g_out, 0xD53B4200 | X1_REG);/* mrs x1, nzcv */ \
 	flags_ptr(y_reg, VALUE); \
 	output_w32(g_out, 0xD358FC21); /* lsr x1, x1, #0x18 */\
-	/*if (cf_change) { output_w32(g_out, 0xE1811085);*/  /* ORR	R1, R5, LSL #1 *//*}*/   \
-	output_w32(g_out, 0x927A0021); /* and x1, x1, #0x40 */  \
-	emit_andimm(g_out, R9, 0xbf, R9); /* and sb, sb, #0xbf */ \
-	emit_or64(g_out, R1, y_reg, R1); \
-	emit_writeBYTE_ptr32_regptrTO_regFROM(g_out, CACHED_PTR(flags_ptr(R0, ADDRESS)), R1); \
+	output_w32(g_out, 0xD358FC00 | (X1_REG << 5) | X1_REG); /* and x1, x1, #0x40 */  \
+	emit_andimm(g_out, X9_REG, 0xbf, X9_REG); /* and sb, sb, #0xbf */ \
+	emit_or64(g_out, X1_REG, y_reg, X1_REG); \
+	emit_writeBYTE_ptr32_regptrTO_regFROM(g_out, CACHED_PTR(flags_ptr(X0_REG, ADDRESS)), X1_REG); \
 }
 
 #define SET_Q { \
   flags_ptr(y_reg, VALUE); \
 	emit_seto(g_out, y_reg); \
 	emit_lsl(g_out, y_reg, 3); \
-	emit_or_ptr32_regptr_reg(g_out, CACHED_PTR(flags_ptr(R1, ADDRESS)), y_reg); \
+	emit_or_ptr32_regptr_reg(g_out, CACHED_PTR(flags_ptr(X1_REG, ADDRESS)), y_reg); \
 }
 
 #define GET_CARRY(invert) { \
-	flags_ptr(R2, VALUE); \
-	int setb=genlabel(); \
-	int done=genlabel(); \
-		output_w32(g_out, 0x721B0042); /* ands w2, w2, #0x20 */ \
+	flags_ptr(X2_REG, VALUE); \
+	uint64_t setb=genlabel(); \
+	uint64_t done=genlabel(); \
+		output_w32(g_out, 0x721B0040 | (X2_REG << 5)); /* ands w2, w2, #0x20 */ \
 		emit_branch_label(g_out, setb, 0x1); \
 		clear_carry_flag(g_out); \
 		emit_branch_label(g_out, done, 0xE); \
-		emit_label(g_out, (int)setb); \
+		emit_label(g_out, setb); \
 		set_carry_flag(g_out); \
-		emit_label(g_out, (int)done); \
+		emit_label(g_out, done); \
 }

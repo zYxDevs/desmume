@@ -19,7 +19,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(_WIN32) && ! defined(__ANDROID__)
+typedef uint32_t u_int;
+#else
 #include <sys/mman.h>
+#endif
 
 #define R11 11
 #define R10 10
@@ -659,11 +663,11 @@ static void emit_str_cond(t_bytes *out, int rs, int rt, int cond) {
 }
 
 static void emit_ldrb(t_bytes *out, int rs, int rt) {
-	output_w32(out, 0xE5D00000|rd_rn_rm(rt,rs,0)|0); // LDRB	R0, [R0] <-- armconverter.com
+	output_w32(out, 0xE5D00000|rd_rn_rm(rt,rs,0)|0); // LDRB	R0, [R0]
 }
 
 static void emit_ldrsb(t_bytes *out, int rs, int rt) {
-	output_w32(out, 0xE1D000D0|rd_rn_rm(rt,rs,0)|0); // LDRSB	R0, [R0] <-- armconverter.com
+	output_w32(out, 0xE1D000D0|rd_rn_rm(rt,rs,0)|0); // LDRSB	R0, [R0]
 }
 
 static void emit_strb(t_bytes *out, int rs, int rt) {
@@ -671,7 +675,7 @@ static void emit_strb(t_bytes *out, int rs, int rt) {
 }
 
 static void emit_ldrsw(t_bytes *out, int rs, int rt) {
-	output_w32(out, 0xE1D000F0|rd_rn_rm(rt,rs,0)|0); // LDRSB	R0, [R0] <-- armconverter.com
+	output_w32(out, 0xE1D000F0|rd_rn_rm(rt,rs,0)|0); // LDRSB	R0, [R0]
 }
 
 static void emit_ldrs(t_bytes *out, int rs, int rt) {
@@ -679,7 +683,7 @@ static void emit_ldrs(t_bytes *out, int rs, int rt) {
 }
 
 static void emit_ldrw(t_bytes *out, int rs, int rt) {
-	output_w32(out, 0xE1D000B0|rd_rn_rm(rt,rs,0)|0); // LDRB	R0, [R0] <-- armconverter.com
+	output_w32(out, 0xE1D000B0|rd_rn_rm(rt,rs,0)|0); // LDRB	R0, [R0]
 }
 
 static void emit_strw(t_bytes *out, int rs, int rt) {
@@ -1132,7 +1136,7 @@ static void emit_brk(t_bytes *out) {
   output_w32(out, 0xE1200070);
 }
 
-unsigned int genlabel();
+uint64_t genlabel();
 
 static void emit_startfunc(t_bytes *out) {
 
@@ -1212,17 +1216,17 @@ static  void restore(t_bytes *out) {
 #define GET_CARRY(invert) { \
 	flags_ptr(R2, VALUE); \
 	/*printreg3(1, R2);*/ \
-	int setb=genlabel(); \
-	int done=genlabel(); \
+	uint64_t setb=genlabel(); \
+	uint64_t done=genlabel(); \
 		output_w32(g_out, 0xE2122020); /* ands r2, r2, #0x20 */ \
 		/*emit_andimm(g_out, R2, 0x20, R2); \
 		emit_cmpimm(g_out, R2, 0x20);*/ \
 		emit_branch_label(g_out, setb, 0x1); \
 		set_carry_flag(g_out); \
 		emit_branch_label(g_out, done, 0xE); \
-		emit_label(g_out, (int)setb); \
+		emit_label(g_out, setb); \
 		clear_carry_flag(g_out); \
-		emit_label(g_out, (int)done); \
+		emit_label(g_out, done); \
 	/*c.bt(flags_ptr, 5); \
 	if (invert) c.cmc();*/ \
 }

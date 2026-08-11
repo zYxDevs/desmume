@@ -38,7 +38,7 @@ typedef struct labelmap {
     std::vector<t_jumpmap> jumps;
 } t_labelmap;
 
-static std::map<int, t_labelmap> g_LABELS;
+static std::map<uint64_t, t_labelmap> g_LABELS;
 static int g_NUMJUMPS = 0;
 static int g_TOTALBYTES = 0;
 u32 *g_PTR = NULL;
@@ -59,17 +59,21 @@ std::map<JittedFunc, u_int> allFuncs;
 #endif
 
 static void* alloc_executable_memory(size_t size) {
+#if defined(_WIN32) && ! defined(__ANDROID__)
+  void *ptr = VirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+  if (! ptr) {
+    MessageBoxA(NULL, "VirtualAlloc failed", "Error", MB_OK);
+    return NULL;
+  }
+#else
   void *ptr = mmap(NULL, size,
                    PROT_READ | PROT_WRITE | PROT_EXEC,
                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_JIT, -1, 0);
+  if (ptr == (void*)-1 || ! ptr) {  
+    return NULL;
+  }
+#endif
   
-  if (ptr == (void*)-1) {
-    return NULL;
-  }
-  if (! ptr) {
-    return NULL;
-  }
-
   allFuncs.insert(std::pair<JittedFunc,int>((JittedFunc)ptr, size));
 
   return ptr;
@@ -102,7 +106,11 @@ static void *armjitarm_alloc_func(size_t size) {
 static  void freeFuncs() {
 	std::map<JittedFunc, u_int>::iterator it;
 	for (it=allFuncs.begin(); it!=allFuncs.end(); ++it) {
+#if defined(_WIN32) && ! defined(__ANDROID__)
+        VirtualFree((void *)it->first, 0, MEM_RELEASE); 
+#else
 		munmap((void *)it->first, (uintptr_t)it->second);
+#endif  
 	}
 	allFuncs.clear();
 	g_curr_jit_block = NULL;
@@ -131,11 +139,11 @@ static  void output_w32(t_bytes *bytes, u32 word) {
     }
 }
 
-static  void emit_label(t_bytes *bytes, u_int id) {
+static  void emit_label(t_bytes *bytes, uint64_t id) {
     g_LABELS[id].num_bytes = g_TOTALBYTES + 4;
 }
 
-static  void emit_branch_label(t_bytes *out, u_int id, int cond) {	
+static  void emit_branch_label(t_bytes *out, uint64_t id, int cond) {	
     u32 *instruct_adr = g_PTR;
 
     output_w32(out, 0x00000000);
@@ -184,7 +192,7 @@ void releaseBytes(t_bytes *bytes) {
 }
 	
 JittedFunc createFunc(t_bytes *bytes) {
-    for (std::map<int, t_labelmap>::iterator lbl = g_LABELS.begin(); lbl != g_LABELS.end(); lbl++) {
+    for (std::map<uint64_t, t_labelmap>::iterator lbl = g_LABELS.begin(); lbl != g_LABELS.end(); lbl++) {
         int nj = lbl->second.jumps.size();
         for (int i = 0; i < nj; i++) {
             MOD_JUMP(lbl->second.jumps[i].instruct_ptr, lbl->second.jumps[i].cond, lbl->second.num_bytes, lbl->second.jumps[i].num_bytes)
@@ -211,10 +219,12 @@ JittedFunc createFunc(t_bytes *bytes) {
         curr_bytes = curr_bytes->next;
     }
 	
-#ifdef __APPLE__
+#if defined(_WIN32) && ! defined(__ANDROID__)
+	FlushInstructionCache(GetCurrentProcess(), fn, g_TOTALBYTES);
+#elif defined(__APPLE__)
 	sys_icache_invalidate(fn, g_TOTALBYTES);
 #else
-	__builtin___clear_cache(fn, fn+g_TOTALBYTES);
+	__builtin___clear_cache((char*)fn, (char*)fn + g_TOTALBYTES);
 #endif
 	
 	return (JittedFunc)fn;

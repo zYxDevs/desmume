@@ -117,8 +117,8 @@ void jit_write() {
 
 u32 saveBlockSizeJIT = 0;
 
-static volatile unsigned int label_gen_num=0;
-unsigned int genlabel() {
+static std::atomic<uint64_t> label_gen_num(0);
+uint64_t genlabel() {
 	return ++label_gen_num;
 }
 
@@ -380,7 +380,7 @@ DS_ALIGN(4096) uintptr_t compiled_funcs[1<<26] = {0};
 
 static u8 recompile_counts[(1<<26)/16];
 
-static void emit_branch(int cond, int to);
+static void emit_branch(int cond, uint64_t to);
 static void _armlog(u8 proc, u32 addr, u32 opcode);
 
 //-----------------------------------------------------------------------------
@@ -1330,7 +1330,7 @@ static int OP_MRS_SPSR(const u32 i)
 	{ \
 		case 0x1:		 \
 			{ \
-				unsigned int __skip=genlabel(); \
+				uint64_t __skip=genlabel(); \
 				cpu_ptr(CPSR, mode, VALUE); \
 				emit_andimm(g_out, mode, 0x1F, mode); \
 				emit_cmpimm(g_out, mode, USR); \
@@ -1346,12 +1346,12 @@ static int OP_MRS_SPSR(const u32 i)
 				} \
 				emit_writeBYTE_ptr32_regptrTO_regFROM(g_out, cpu_ptr_byte(reg, 0, R1, ADDRESS), operand); \
 				changeCPSR; \
-				emit_label(g_out, (int)__skip); \
+				emit_label(g_out, __skip); \
 			} \
 			return 1; \
 		case 0x2:		  \
 			{ \
-				unsigned int __skip=genlabel(); \
+				uint64_t __skip=genlabel(); \
 				cpu_ptr(CPSR, mode, VALUE); \
 				emit_andimm(g_out, mode, 0x1F, mode); \
 				emit_cmpimm(g_out, mode, USR); \
@@ -1359,12 +1359,12 @@ static int OP_MRS_SPSR(const u32 i)
 				emit_lsr(g_out, operand, 8); \
 				emit_writeBYTE_ptr32_regptrTO_regFROM(g_out, cpu_ptr_byte(reg, 1, R1, ADDRESS), operand); \
 				changeCPSR; \
-				emit_label(g_out, (int)__skip); \
+				emit_label(g_out, __skip); \
 			} \
 			return 1; \
 		case 0x4:		  \
 			{ \
-				unsigned int __skip=genlabel(); \
+				uint64_t __skip=genlabel(); \
 				cpu_ptr(CPSR, mode, VALUE); \
 				emit_andimm(g_out, mode, 0x1F, mode); \
 				emit_cmpimm(g_out, mode, USR); \
@@ -1372,7 +1372,7 @@ static int OP_MRS_SPSR(const u32 i)
 				emit_lsr(g_out, operand, 16); \
 				emit_writeBYTE_ptr32_regptrTO_regFROM(g_out, cpu_ptr_byte(reg, 2, R1, ADDRESS), operand); \
 				changeCPSR; \
-				emit_label(g_out, (int)__skip); \
+				emit_label(g_out, __skip); \
 			} \
 			return 1; \
 		case 0x8:		  \
@@ -1392,8 +1392,8 @@ static int OP_MRS_SPSR(const u32 i)
 							(BIT19(i)?0xFF000000:0x00000000); \
 	static u32 byte_mask_USR = (BIT19(i)?0xFF000000:0x00000000); \
 	cpu_ptr(reg.val, xPSR_mem, ADDRESS); \
-	unsigned int __USR=genlabel(); \
-	unsigned int __done=genlabel(); \
+	uint64_t __USR=genlabel(); \
+	uint64_t __done=genlabel(); \
 	cpu_ptr(CPSR.val, mode, VALUE); \
 	emit_andimm(g_out, mode, 0x1F, mode); \
 	emit_cmpimm(g_out, mode, USR); \
@@ -1414,13 +1414,13 @@ static int OP_MRS_SPSR(const u32 i)
 	emit_or(g_out, xPSR, operand, xPSR); \
 	emit_write_ptr32_regptrTO_regFROM(g_out, cpu_ptr(reg.val, R1, ADDRESS), xPSR); \
 	emit_branch_label(g_out, __done, 0xE); \
-	emit_label(g_out, (int)__USR); \
+	emit_label(g_out, __USR); \
 	cpu_ptr(reg.val, xPSR, VALUE); \
 	emit_andimm(g_out, operand, byte_mask_USR, operand); \
 	emit_andimm(g_out, xPSR, ~byte_mask_USR, xPSR); \
 	emit_or(g_out, xPSR, operand, xPSR); \
 	emit_write_ptr32_regptrTO_regFROM(g_out, cpu_ptr(reg.val, R1, ADDRESS), xPSR); \
-	emit_label(g_out, (int)__done); \
+	emit_label(g_out, __done); \
 	changeCPSR; \
 	return 1;
 	
@@ -3620,7 +3620,7 @@ static int OP_POP_PC(const u32 i)  { return op_push_pop(i, 0, 1); }
 //-----------------------------------------------------------------------------
 static int OP_B_COND(const u32 i)
 {
-	unsigned int skip=genlabel();
+	uint64_t skip=genlabel();
 	u32 dst = bb_r15 + ((u32)((s8)(i&0xFF))<<1);
 	
 	emit_write_ptr32_regptrTO_immFROM(g_out, cpu_ptr(instruct_adr, PTR_STORE_REG, ADDRESS), bb_next_instruction);
@@ -3630,7 +3630,7 @@ static int OP_B_COND(const u32 i)
 	emit_write_ptr32_regptrTO_immFROM(g_out,12/*cpu_ptr(instruct_adr, R1, ADDRESS)*/, dst);
 	
 	emit_inc_ptr_imm(g_out, (uintptr_t)&bb_total_cycles, 2);
-	emit_label(g_out, (int)skip);
+	emit_label(g_out, skip);
 
 	return 1;
 }
@@ -3912,7 +3912,7 @@ static void sync_r15(u32 opcode, bool is_last, bool force)
 	}
 }
 
-static void emit_branch(int cond, int /*Label*/ to)
+static void emit_branch(int cond, uint64_t /*Label*/ to)
 {
 	static const u8 cond_bit[] = {0x40, 0x40, 0x20, 0x20, 0x80, 0x80, 0x10, 0x10};
 	if(cond < 8)
@@ -4065,7 +4065,7 @@ static u32 compile_basicblock()
 			// another with the same condition, but merging them into a
 			// single branch has negligible effect on speed.
 			if(bEndBlock) sync_r15(opcode, 1, 1);
-			int skip;
+			uint64_t skip;
 			skip=genlabel();
 			
 			emit_branch(CONDITION(opcode), skip);
@@ -4088,7 +4088,7 @@ static u32 compile_basicblock()
 					JIT_COMMENT("cycles (%d)", cycles);
 					emit_inc_ptr_imm(g_out, (uintptr_t)&bb_total_cycles, -1);
 				}
-			emit_label(g_out, (int)skip);
+			emit_label(g_out, skip);
 		}
 		else
 		{
