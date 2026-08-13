@@ -24,7 +24,7 @@ CPPFLAGS = -DMINGW_HAS_SECURE_API \
   -I../../libretro-common/include -Izlib128
 
 CXXFLAGS = -I. -I../.. -I../../frontend/modules/osd/agg \
-  -Iagg/include -Iwinpcap -Idirectx -Ilua/include \
+  -Iagg/include -Iwinpcap -Idirectx -I../../lua \
   -fpermissive -fms-extensions -Wno-write-strings -std=gnu++11 $(OPT)
 
 CFLAGS=$(OPT)
@@ -398,24 +398,17 @@ zlib-1.2.8/.extracted: zlib-1.2.8.tar.xz
 zlib-1.2.8/libz.a: zlib-1.2.8/.extracted
 	( cd zlib-1.2.8 ; CC=$(CC) AR=$(AR) RANLIB=$(RANLIB) ./configure ; make -j libz.a ; cd .. )
 
-lua-5.1.5.tar.gz:
-	wget https://www.lua.org/ftp/lua-5.1.5.tar.gz
-
-lua-5.1.5/.extracted: lua-5.1.5.tar.gz
-	tar xf $<
-	touch $@
-
-lua-5.1.5/src/liblua.a: lua-5.1.5/.extracted
-	( cd lua-5.1.5/src ; make -j CC=$(CC) AR="$(AR) rcu" RANLIB=$(RANLIB) MYCFLAGS="-O3" liblua.a ; )
+../../lua/liblua.a: $(wildcard ../../lua/*.c)
+	( cd ../../lua ; rm -f liblua.a *.o ; make -j CC=$(CC) AR="$(AR) rcu" RANLIB=$(RANLIB) MYCFLAGS="-O3" liblua.a ; )
 
 resources.o: resources.rc
 	$(WINDRES) $< $@
 
-desmume.exe: $(OBJS) $(COBJS) $(RESOBJS) lua-5.1.5/src/liblua.a zlib-1.2.8/libz.a
+desmume.exe: $(OBJS) $(COBJS) $(RESOBJS) ../../lua/liblua.a zlib-1.2.8/libz.a
 	$(CXX) $^ $(LDFLAGS) -o $@ $(LIBS)
 
 clean:
-	rm -f $(OBJS) $(COBJS) $(RESOBJS) desmume.exe lua-5.1.5/src/liblua.a zlib-1.2.8/libz.a lua-5.1.5/src/*.o zlib-1.2.8/*.o ../../scmrev.h
+	rm -f $(OBJS) $(COBJS) $(RESOBJS) desmume.exe ../../lua/*.o ../../lua/liblua.a zlib-1.2.8/libz.a zlib-1.2.8/*.o ../../scmrev.h
 
 lightclean:
 	rm -f $(OBJS) desmume.exe

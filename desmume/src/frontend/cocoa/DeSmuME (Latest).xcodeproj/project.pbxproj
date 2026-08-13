@@ -6740,7 +6740,7 @@
 				AB96EE851F990E4700B7AA67 /* lvm.h */,
 				AB96EE871F990E4700B7AA67 /* lzio.h */,
 			);
-			path = lua;
+			path = "../../lua";
 			sourceTree = "<group>";
 		};
 		ABA731241BB5104200B26147 /* source-sans-pro */ = {
@@ -13377,7 +13377,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = (
-					lua/,
+					"../../lua/",
 					freetype/include/,
 					"../../libretro-common/include/",
 				);
@@ -13437,7 +13437,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				HEADER_SEARCH_PATHS = (
-					lua/,
+					"../../lua/",
 					freetype/include/,
 					"../../libretro-common/include/",
 				);
